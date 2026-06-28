@@ -1,0 +1,48 @@
+# IDIA Server — Docker Compose orchestration
+#
+# Two services: ray-head (Ray Serve LLM + vLLM) and litellm (gateway).
+# Port 4000 is the ONLY port exposed to the host. Ray ingress (8000),
+# dashboard (8265), and client port (10001) stay on the internal Compose
+# network — they are NEVER published.
+#
+# See docs/ARCHITECTURE.md §5.4 for architecture rationale and §9 for
+# the security constraints that justify this port isolation.
+
+services:
+  ray-head:
+    build:
+      context: .
+      dockerfile: Dockerfile.ray
+    ipc: host
+    shm_size: "4gb"
+    volumes:
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - MODEL_ID=${MODEL_ID}
+      - MODEL_SOURCE=${MODEL_SOURCE}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+    # NO ports: published — 8000 (Ray ingress), 8265 (dashboard), 10001
+    # (client) stay on the internal Compose network. See ARCHITECTURE.md §9.3.
+
+  litellm:
+    image: docker.litellm.ai/berriai/litellm:v1.85.0
+    depends_on:
+      - ray-head
+    ports:
+      - "4000:4000"                  # Only port exposed to host
+    volumes:
+      - ./config.yaml:/app/config.yaml
+    environment:
+      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+    command: ["--config=/app/config.yaml"]
+    restart: unless-stopped

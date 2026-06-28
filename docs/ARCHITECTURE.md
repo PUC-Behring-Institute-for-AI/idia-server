@@ -172,6 +172,8 @@ serve.run(app)
 
 LiteLLM treats Ray Serve's ingress as a custom OpenAI-compatible provider: the provider token is `openai` (meaning "speak the OpenAI protocol to this base URL"), and everything after the first `/` is the model identifier passed through to the backend.
 
+The configuration is maintained in `config.yaml` at the repository root, rendered with env var substitution at runtime. The master key is injected via `${LITELLM_MASTER_KEY:sk-admin}` (fallback default `sk-admin`).
+
 ```yaml
 model_list:
   - model_name: llama-3.1-8b
@@ -181,13 +183,15 @@ model_list:
       api_key: "placeholder"            # Ray's ingress has no per-request key by default — see §9.3
 
 general_settings:
-  master_key: os.environ/LITELLM_MASTER_KEY
+  master_key: ${LITELLM_MASTER_KEY:sk-admin}
   background_health_checks: true
   health_check_interval: 30
   enable_health_check_routing: true
 ```
 
-`background_health_checks` lets LiteLLM proactively drop an unreachable backend from its routing pool before a real request hits it — relevant when a model is mid-cold-start or a node is being replaced.
+`background_health_checks` lets LiteLLM proactively drop an unreachable backend from its routing pool before a real request hits it — relevant when a model is mid-cold-start or a node is being replaced. The `master_key` placeholder is substituted at runtime by the LiteLLM process itself, which parses `${VAR:default}` syntax natively.
+
+For the full file, see `config.yaml` at the repository root. For client consumption patterns, see §8.
 
 ---
 
@@ -212,11 +216,13 @@ inference-server/
 FROM rayproject/ray-ml:2.55.0-py311-gpu
 RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" vllm
 WORKDIR /app
-COPY serve_config.yaml .
-CMD ["serve", "run", "serve_config.yaml"]
+COPY serve_config.yaml scripts/render_config.py ./
+CMD ["python3", "/app/render_config.py"]
 ```
 
 The `ray-ml` image ships Ray's ML dependencies; the explicit `ray[serve,llm]` install pulls Ray Serve LLM's additional requirements. Pin the Ray version. `2.55.0` installs vLLM `0.18.0` as its bundled engine; verify compatibility before bumping either independently.
+
+The CMD delegates to a Python entrypoint (`render_config.py`, see §5.6) that reads `serve_config.yaml`, substitutes `${VAR}` placeholders from environment variables, writes the rendered YAML to a temp file, and then `exec`s `serve run` — replacing the Python process with Ray Serve without a fork. This substitution is necessary because `serve_config.yaml` is consumed by Ray Serve directly and cannot access shell env vars natively.
 
 ### 5.3 `serve_config.yaml`
 
@@ -233,17 +239,22 @@ applications:
     args:
       llm_configs:
         - model_loading_config:
-            model_id: llama-3.1-8b
-            model_source: meta-llama/Llama-3.1-8B-Instruct
+            model_id: ${MODEL_ID}
+            model_source: ${MODEL_SOURCE}
           engine_kwargs:
             dtype: bfloat16
-            gpu_memory_utilization: 0.9
+            gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}
+            max_model_len: ${MAX_MODEL_LEN}
           deployment_config:
             autoscaling_config:
               min_replicas: 1
               max_replicas: 4
               target_ongoing_requests: 64
 ```
+
+Placeholders `${VAR}` are substituted at runtime by `render_config.py` (§5.6).
+The env vars that map to each placeholder are documented in §5.5 and in
+`.env.example` at the repository root.
 
 ### 5.4 `docker-compose.yml`
 
@@ -286,10 +297,63 @@ services:
 
 ### 5.5 `.env`
 
+See `.env.example` at the repository root for the full documented template.
+Only `.env` (without `.example`) contains secrets and is never committed.
+
 ```
 HF_TOKEN=hf_xxx
 LITELLM_MASTER_KEY=sk-litellm-admin-change-me
+MODEL_ID=llama-3.1-8b
+MODEL_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+MAX_MODEL_LEN=8192          # optional — see defaults below
+GPU_MEMORY_UTILIZATION=0.9  # optional — see defaults below
 ```
+
+**Variable reference:**
+
+| Variable | Required | Type | Default | Used by |
+|----------|----------|------|---------|---------|
+| `HF_TOKEN` | Yes | str | — | `Dockerfile.ray` → HuggingFace Hub |
+| `LITELLM_MASTER_KEY` | Yes | str | — | `config.yaml` (LiteLLM) |
+| `MODEL_ID` | Yes | str | — | `serve_config.yaml` (Ray) |
+| `MODEL_SOURCE` | Yes | str | — | `serve_config.yaml` (Ray) |
+| `MAX_MODEL_LEN` | No | int | 8192 | `serve_config.yaml` (vLLM engine_kwargs) |
+| `GPU_MEMORY_UTILIZATION` | No | float | 0.9 | `serve_config.yaml` (vLLM engine_kwargs) |
+
+The template YAML (`serve_config.yaml`) uses `${VAR}` placeholders; the
+Python entrypoint (§5.6) substitutes them at container startup. LiteLLM
+parses `${VAR:default}` internally — both use the same convention but with
+different substitution engines.
+
+### 5.6 Entrypoint script — `scripts/render_config.py`
+
+The Docker CMD in `Dockerfile.ray` (§5.2) does not call `serve` directly.
+Instead it launches a Python entrypoint that performs env var substitution
+on `serve_config.yaml` before delegating to Ray Serve.
+
+**Why a Python entrypoint instead of `envsubst` or shell?**
+
+| Approach | Mechanism | Dependencies | Error handling |
+|----------|-----------|-------------|----------------|
+| Shell `envsubst` | `gettext-base` + `envsubst` | Must `apt-get install` in image | Silent — unknown placeholders passed through as literals |
+| **Python (chosen)** | `yaml.safe_load` + `re.sub` + `os.execlp` | Python + PyYAML (both already in `ray-ml`) | Explicit: missing required vars → exit 1; invalid YAML → exit 1 |
+
+**Behavior:**
+
+1. Locate `serve_config.yaml` (searches script directory then `/app`).
+2. Read template with `${VAR}` placeholders.
+3. Collect environment: required vars (`MODEL_ID`, `MODEL_SOURCE`) must be set;
+   optional vars (`MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`) get defaults.
+4. Substitute placeholders using regex `\$\{(\w+)\}`.
+5. Validate rendered YAML: parse with `yaml.safe_load`, verify structural
+   keys (`applications`, `llm_configs`, `model_loading_config` with non-empty
+   `model_id` and `model_source`).
+6. Write rendered YAML to a temp file.
+7. `exec serve run` on the temp file (replaces the Python process).
+
+**Testing hook:** the module exposes a `render()` pure function and a
+`--dry-run` CLI flag that prints the rendered YAML to stdout without
+launching Ray Serve — used by `tests/test_integration.py`.
 
 ---
 
@@ -560,8 +624,8 @@ infrastructure requirements and failure modes.
 |----------|-------|---------------|-------------|-------|
 | **docs** | File structure, markdown headers, governance sections | None (`pytest`) | Every commit | 1 |
 | **config** | YAML schema validation for every config artifact | PyYAML | Every commit | 1 |
-| **integration** | Docker build, `docker compose up`, GPU detection, E2E inference, autoscaling | Docker + NVIDIA GPU | Before release | 2 |
-| **security** | Port isolation (`:8000`, `:8265` unreachable externally), image pinning | Docker | Before release | 2 |
+| **integration** | Docker build, `docker compose up`, GPU detection, E2E inference, autoscaling; unit tests for `render_config.py` (env var substitution, YAML validation) | Docker + NVIDIA GPU for full suite; unit component runs with `pytest` only | Before release | 2 |
+| **security** | Port isolation (`:8000`, `:8265` unreachable externally), image pinning (no `:latest`), trust boundaries, dashboard binding | YAML/config-level checks run with `pytest` only; network-level checks require Docker | Before release | 2 |
 
 ### 11.2 Test location and execution
 
@@ -593,6 +657,35 @@ Tests that depend on files or infrastructure from later phases use
 `pytest.skip()` with an explanatory message. This guarantees the
 test suite passes cleanly at every phase, even when only a subset of
 artifacts exist.
+
+### 11.5 Test files and what they cover
+
+| File | Phase | Marker | Key tests |
+|------|-------|--------|-----------|
+| `tests/test_docs.py` | 1 | `docs` | Required file existence, markdown headers, governance sections, version footer |
+| `tests/test_config_schemas.py` | 1 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example` |
+| `tests/test_integration.py` | 2 | `integration` | `render_config.py` env var substitution (required/optional), dry-run mode, error paths; Compose consistency (build source, image pinning, env var propagation) |
+| `tests/test_security.py` | 2 | `security` | Port isolation (only 4000 exposed), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding diagnostics |
+
+### 11.6 Simulated integration testing (Mac/non-GPU environments)
+
+Because integration and security tests require Docker + NVIDIA GPU for
+full validation, a subset of tests exercise the code paths and config
+structures without real infrastructure:
+
+- `TestRenderConfig` calls `render_config.render()` — a pure function that
+  substitutes env var placeholders and validates YAML output without
+  launching any container.
+- `TestRenderConfigErrors` tests error paths (missing required env vars,
+  invalid YAML templates) via `--dry-run` flag and direct function calls.
+- `TestComposeConsistency` validates `docker-compose.yml` structure
+  (build context, image tags, env var lists) by parsing YAML only.
+- `TestSecurityPortIsolation` verifies that only port 4000 appears in
+  `ports:` sections by inspecting the YAML, not by running containers.
+
+Tests that genuinely require GPU (`docker compose build`, `ray status`,
+E2E inference) are documented and intended for pre-release validation on
+GPU-equipped hardware.
 
 For the complete testing reference, see `AGENTS.md` (Testing Strategy).
 
@@ -810,6 +903,7 @@ New tier, new deployment target, architectural pattern change:
 |------|--------|--------|
 | 2026-06-28 | Document created | Initial architecture specification |
 | 2026-06-28 | Added §11 Testing & Validation; renumbered §11–§15 to §12–§16; added §16 Document Evolution Contract | Living document governance + test suite |
+| 2026-06-28 | Phase 2: Added entrypoint script (render_config.py), expanded .env vars with table, updated Dockerfile CMD, serve_config placeholders, LiteLLM config, integration/security tests, new §5.6 Entrypoint Script | Build Core implementation |
 
 ---
 
@@ -829,4 +923,4 @@ New tier, new deployment target, architectural pattern change:
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.1 | Last updated: 2026-06-28 | Sections changed: added §11 (Testing & Validation), renumbered §11–§15 to §12–§16, added §16 (Document Evolution Contract), added version footer*
+*Document version: 1.2 | Last updated: 2026-06-28 | Sections changed: §4.3 (LiteLLM config — master_key notation), §5.2 (Dockerfile CMD — entrypoint), §5.3 (serve_config — placeholders), §5.5 (.env — expanded table), added §5.6 (Entrypoint Script), §11 (Testing — integration/security details, simulated testing, file reference)*

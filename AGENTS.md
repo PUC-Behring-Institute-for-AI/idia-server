@@ -36,19 +36,22 @@ idia-server/
 ├── AGENTS.md              ← este arquivo — regras do projeto para agentes OpenCode
 ├── .gitignore
 ├── pyproject.toml         ← configuração pytest, ruff
-├── .env.example           ← template de secrets (Phase 2)
-├── Dockerfile.ray         ← imagem Ray Serve LLM (Phase 2)
-├── docker-compose.yml     ← orquestração local / single-EC2 (Phase 2)
-├── serve_config.yaml      ← config do Ray Serve (Phase 2)
-├── config.yaml            ← roteamento LiteLLM (Phase 2)
+├── .env.example           ← template de secrets (Phase 2 ✓)
+├── Dockerfile.ray         ← imagem Ray Serve LLM (Phase 2 ✓)
+├── docker-compose.yml     ← orquestração local / single-EC2 (Phase 2 ✓)
+├── serve_config.yaml      ← config do Ray Serve (Phase 2 ✓)
+├── config.yaml            ← roteamento LiteLLM (Phase 2 ✓)
 ├── cluster.yaml           ← definição do cluster AWS (Phase 3)
 ├── prometheus.yml         ← monitoring scrape config (Phase 4)
 ├── scripts/               ← utilitários (entrypoint, helpers)
+│   └── render_config.py   ← entrypoint Python — substitui placeholders env var (Phase 2 ✓)
 ├── tests/                 ← suíte de testes (pytest)
 │   ├── __init__.py
 │   ├── conftest.py        ← fixtures compartilhadas
 │   ├── test_docs.py       ← testes de estrutura de documentação
-│   └── test_config_schemas.py  ← testes de schema de configs
+│   ├── test_config_schemas.py  ← testes de schema de configs
+│   ├── test_integration.py ← testes de integração simulados (render_config, Compose) (Phase 2 ✓)
+│   └── test_security.py   ← testes de segurança (portas, pinning, boundaries) (Phase 2 ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
 │   └── ...                ← futuros: ADR.md, GLOSSARY.md conforme necessário
@@ -60,7 +63,7 @@ idia-server/
 | Phase | Name | Dependencies |
 |-------|------|-------------|
 | **1** | Foundation + AGENTS.md + README.md | — |
-| **2** | Build Core | Phase 1 |
+| **2** | Build Core | Phase 1 | ✅ |
 | **3** | AWS Deployment | Phase 2 |
 | **4** | Monitoring | Phase 2 |
 | **5** | Final Documentation (revision + handoff) | Phases 1–4 |
@@ -115,6 +118,26 @@ O documento de arquitetura evolui com o código. Estas regras previnem desync:
 
 ---
 
+## Anti-Drift Rule (AXIOM — NON-OVERRIDABLE)
+
+Toda tarefa de implementação que cria, modifica ou remove um artefato de
+infraestrutura (Dockerfile, config YAML, Compose, entrypoint, script de
+deploy, pipeline de CI/CD, teste de integração ou segurança) DEVE:
+
+1. Declarar no plano: `[UPDATES ARCHITECTURE.md — section X]`
+2. Atualizar a seção correspondente no architecture doc no mesmo commit
+3. Atualizar o footer de versão do architecture doc
+4. Adicionar entrada na Structural Change History
+
+**Violação:** se um artefato for mergeado sem a atualização correspondente da
+arquitetura, o commit é considerado incompleto. A correção deve ser feita
+antes de qualquer outro trabalho.
+
+Esta regra está em vigor desde a Fase 2 e se aplica a todas as fases
+subsequentes.
+
+---
+
 ## Security Constraints (from ARCHITECTURE 
 
 Derivadas da arquitetura. **Não negociáveis.**
@@ -158,7 +181,7 @@ O modelo é configurável via `.env` com duas variáveis:
 | `MODEL_ID` | `llama-3.1-8b` | Sim |
 | `MODEL_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` | Sim |
 
-A implementação do templating (envsubst vs Python) será decidida na Fase 2.
+A implementação do templating usa o entrypoint Python `scripts/render_config.py`, que substitui placeholders `${VAR}` por variáveis de ambiente antes de delegar ao Ray Serve.
 
 ---
 
@@ -173,8 +196,8 @@ cada uma com seu marcador e requisitos de infraestrutura.
 |----------|-----------|-------------|----------------------|------|
 | `docs` | Documentação | Estrutura de arquivos obrigatórios, seções de documentos vivos, footer de versão | Não — roda com `pip install pytest` | 1 |
 | `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example` | Não — apenas PyYAML | 1 |
-| `integration` | Integração | Build da imagem Docker, `docker compose up`, GPU detection, E2E inference, escala de réplicas | Docker + GPU (NVIDIA) | 2 |
-| `security` | Segurança | Isolamento de portas (`:8000`, `:8265` inacessíveis externamente), pin de imagens | Docker | 2 |
+| `integration` | Integração | `render_config.py`: substituição de env vars, validação YAML, dry-run, caminhos de erro; consistência do Compose (build source, pinning, env vars) | Componente unitário: apenas pytest; full suite: Docker + GPU | 2 |
+| `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
 
 ### Como executar
 
@@ -185,7 +208,7 @@ pip install pytest pyyaml
 # Rodar testes rápidos (docs + config) — zero infraestrutura
 pytest -m "docs or config" -v
 
-# Rodar todos os testes (inclui integração e segurança)
+# Rodar todos os testes (inclui integração e segurança simulados)
 pytest -v
 
 # Rodar testes de um arquivo específico
@@ -218,6 +241,33 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000` |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
+
+#### `test_integration.py` (— integration)
+
+| Classe/Teste | O que verifica |
+|-------------|---------------|
+| `TestRenderConfig.test_render_with_minimal_env` | `render()` substitui placeholders com env vars |
+| `TestRenderConfig.test_render_injects_defaults` | Optional vars (GPU_MEMORY_UTILIZATION) usam default quando ausentes |
+| `TestRenderConfig.test_render_validates_full_template` | Estrutura do YAML renderizado corresponde a `§5.3` (proxy_location, port, min/max_replicas) |
+| `TestRenderConfig.test_dry_run_flag` | `--dry-run` produz YAML válido sem executar serve |
+| `TestRenderConfigErrors.test_missing_required_var_fails` | Exit 1 com mensagem se MODEL_ID ausente |
+| `TestRenderConfigErrors.test_bad_yaml_template_fails` | Exit 1 se template inválido após substituição |
+| `TestComposeConsistency.test_ray_head_builds_locally` | ray-head usa build local (Dockerfile.ray) |
+| `TestComposeConsistency.test_litellm_uses_pinned_image` | litellm usa tag semver, não :latest |
+| `TestComposeConsistency.test_ray_head_passes_vars_to_entrypoint` | ray-head passa MODEL_ID, MODEL_SOURCE, MAX_MODEL_LEN, GPU_MEMORY_UTILIZATION |
+
+#### `test_security.py` (— security)
+
+| Classe/Teste | O que verifica |
+|-------------|---------------|
+| `TestPortIsolation.test_only_4000_published` | Apenas porta 4000 aparece em `ports:` no Compose |
+| `TestPortIsolation.test_ray_ingress_not_published` | Porta 8000 NÃO está em `ports:` |
+| `TestPortIsolation.test_dashboard_not_published` | Porta 8265 NÃO está em `ports:` |
+| `TestPortIsolation.test_ray_client_not_published` | Porta 10001 NÃO está em `ports:` |
+| `TestImagePinning.test_dockerfile_no_latest` | Dockerfile.ray não usa `:latest` |
+| `TestImagePinning.test_compose_no_latest` | Nenhum serviço no Compose usa `:latest` |
+| `TestTrustBoundaries.test_litellm_config_has_master_key` | config.yaml declara `general_settings.master_key` |
+| `TestDashboardBinding.test_dashboard_host_set_to_localhost` | serve_config.yaml http_options.host=0.0.0.0 (proxy interno)
 
 ### Política de Skipping
 

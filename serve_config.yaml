@@ -1,0 +1,29 @@
+# Ray Serve LLM configuration — placeholders rendered at runtime by
+# scripts/render_config.py.
+#
+# Proxy binds inside the container only (:8000). The port is NEVER
+# published to the host — see docs/ARCHITECTURE.md §9.3.
+
+proxy_location: EveryNode
+http_options:
+  host: 0.0.0.0
+  port: 8000
+
+applications:
+  - name: llms
+    import_path: ray.serve.llm:build_openai_app
+    route_prefix: "/"
+    args:
+      llm_configs:
+        - model_loading_config:
+            model_id: ${MODEL_ID}
+            model_source: ${MODEL_SOURCE}
+          engine_kwargs:
+            dtype: bfloat16
+            gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}
+            max_model_len: ${MAX_MODEL_LEN}
+          deployment_config:
+            autoscaling_config:
+              min_replicas: 1
+              max_replicas: 4
+              target_ongoing_requests: 64

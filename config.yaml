@@ -1,0 +1,21 @@
+# IDIA Server — LiteLLM proxy configuration
+#
+# Routes requests for model `MODEL_ID` to the Ray Serve LLM ingress at
+# http://ray-head:8000/v1. The master key authenticates administrative
+# endpoints (key generation, spend queries). Virtual keys scoped to
+# individual users/teams are created at runtime via /key/generate.
+#
+# See docs/ARCHITECTURE.md §4.3 for the configuration anatomy and §8 for
+# the client consumption pattern.
+
+model_list:
+  - model_name: llama-3.1-8b
+    litellm_params:
+      model: openai/llama-3.1-8b
+      api_base: http://ray-head:8000/v1
+      api_key: placeholder
+    # ray-head resolves via Docker Compose's internal DNS. Port 8000 is the
+    # Ray Serve ingress — only reachable from within the Compose network.
+
+general_settings:
+  master_key: ${LITELLM_MASTER_KEY:sk-admin}

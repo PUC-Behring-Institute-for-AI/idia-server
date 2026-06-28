@@ -1,0 +1,18 @@
+# IDIA Server — Ray Serve LLM container
+#
+# Builds on rayproject/ray-ml with Ray Serve LLM and vLLM pinned to
+# compatible versions. The CMD delegates to the Python entrypoint which
+# renders serve_config.yaml with env var substitution before launching
+# Ray Serve.
+#
+# See docs/ARCHITECTURE.md §5.2 for details.
+
+FROM rayproject/ray-ml:2.55.0-py311-gpu
+
+RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" vllm
+
+WORKDIR /app
+
+COPY serve_config.yaml scripts/render_config.py ./
+
+CMD ["python3", "/app/render_config.py"]
