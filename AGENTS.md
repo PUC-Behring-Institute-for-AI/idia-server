@@ -58,7 +58,8 @@ idia-server/
 │   └── test_security.py   ← testes de segurança (portas, pinning, boundaries) (Phase 2 ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
-│   └── ...                ← futuros: ADR.md, GLOSSARY.md conforme necessário
+│   ├── ADR.md             ← Architecture Decision Records (Phase 5 ✓)
+│   └── ...                ← futuros: GLOSSARY.md conforme necessário
 └── README.md              ← documentação do repositório (Phase 1 ✓)
 ```
 
@@ -70,7 +71,7 @@ idia-server/
 | **2** | Build Core | Phase 1 | ✅ |
 | **3** | AWS Deployment | Phase 2 | ✅ |
 | **4** | Monitoring | Phase 2 | ✅ |
-| **5** | Final Documentation (revision + handoff) | Phases 1–4 |
+| **5** | Final Documentation (revision + handoff) | Phases 1–4 | ✅ |
 
 ---
 
@@ -321,6 +322,15 @@ pytest -m config -v
 | `test_is_markdown` | Arquivos começam com `#` (cabeçalho markdown) |
 | `test_contains_sections` | Documentos vivos contêm as seções de governança exigidas (Document Evolution Contract, Structural Change History) |
 | `test_has_version_footer` | ARCHITECTURE.md tem footer de versão e tabela de histórico estrutural |
+| `test_phase_markers_match_code` | README.md: marcadores de fase (Phase N ✓) correspondem a arquivos existentes no disco |
+| `test_directory_listed_files_exist` | Todos os arquivos listados na árvore do README existem |
+| `test_adr_exists` | ADR.md existe e não está vazio |
+| `test_adr_has_entries` | ADR.md contém pelo menos 4 entradas ADR |
+| `test_adr_required_sections` | Cada entrada ADR tem Contexto, Decisão, Alternativa descartada, Consequências |
+| `test_adr_references_phase` | Cada entrada ADR referencia a Fase de origem |
+| `test_adr_has_status` | Cada entrada ADR tem Status (Accepted/Superseded/Deprecated) |
+| `test_license_exists` | LICENSE existe e não está vazio |
+| `test_license_is_apache2` | LICENSE é Apache 2.0 |
 
 #### `test_config_schemas.py` (— config)
 

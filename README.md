@@ -7,7 +7,7 @@ local multi-GPU e na AWS.**
 [![Phase](https://img.shields.io/badge/phase-4%20Monitoring-blue)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![Stack](https://img.shields.io/badge/stack-Ray%20Serve%20%7C%20vLLM%20%7C%20LiteLLM-orange)]()
-[![License](https://img.shields.io/badge/license-TBD-lightgrey)]()
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 
 ---
 
@@ -247,11 +247,11 @@ idia-server/
 ├── AGENTS.md              ← Regras do projeto para agentes OpenCode (Phase 1 ✓)
 ├── .gitignore             ← Exclusões para versionamento (Phase 1 ✓)
 ├── pyproject.toml         ← Configuração pytest + ruff (Phase 1 ✓)
-├── .env.example           ← Template de secrets (Phase 2 ⏳)
-├── Dockerfile.ray         ← Imagem Ray Serve LLM (Phase 2 ⏳)
-├── serve_config.yaml      ← Configuração Ray Serve (Phase 2 ⏳)
-├── docker-compose.yml     ← Orquestração local / single-EC2 (Phase 2 ⏳)
-├── config.yaml            ← Roteamento LiteLLM (Phase 2 ⏳)
+├── .env.example           ← Template de secrets (Phase 2 ✓)
+├── Dockerfile.ray         ← Imagem Ray Serve LLM (Phase 2 ✓)
+├── serve_config.yaml      ← Configuração Ray Serve (Phase 2 ✓)
+├── docker-compose.yml     ← Orquestração local / single-EC2 (Phase 2 ✓)
+├── config.yaml            ← Roteamento LiteLLM (Phase 2 ✓)
 ├── cluster.yaml           ← Definição do cluster AWS (Phase 3 ✓)
 ├── prometheus.yml         ← Configuração de monitoramento (Phase 4 ✓)
 ├── scripts/               ← Utilitários (entrypoints, helpers)
@@ -528,13 +528,39 @@ PUC-Behring Institute for AI, salvo indicação em contrário.*
 
 ---
 
+## 13. Licença
+
+```
+Copyright 2026 PUC-Behring Institute for AI
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+```
+
+O IDIA Server é distribuído sob **Apache License 2.0** — uma licença permissiva
+com proteção de patentes, compatível com projetos de IA (TensorFlow, PyTorch,
+Kubernetes) e adequada para instituições de pesquisa brasileiras que precisam
+incentivar tanto o uso acadêmico quanto a adoção industrial.
+
+---
+
 ## 14. Referências
 
 ### Documentação interna
 
 | Documento | Descrição |
 |-----------|-----------|
-| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Especificação arquitetural completa (832 linhas) incluindo componentes, build, deploy, segurança, monitoramento, custos e troubleshooting |
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Especificação arquitetural completa (~1157 linhas) incluindo componentes, build, deploy, segurança, monitoramento, custos e troubleshooting |
+| [`docs/ADR.md`](docs/ADR.md) | Architecture Decision Records — decisões arquiteturais documentadas por fase |
 | [`AGENTS.md`](AGENTS.md) | Regras do projeto para agentes OpenCode — governança, evolução de documentos, testes |
 
 ### Documentação externa

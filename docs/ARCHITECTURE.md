@@ -1127,7 +1127,20 @@ New tier, new deployment target, architectural pattern change:
 - If code and ARCHITECTURE.md disagree, the document is updated in the same
   PR/commit — never deferred.
 
-### 16.6 Structural Change History
+### 16.6 ADR.md — Decision Records
+
+As decisões arquiteturais mais importantes são registradas em
+[`docs/ADR.md`](ADR.md) com o formato:
+- **ADR-[N]**: título, data, fase de origem, status
+- **Contexto**: problema que motivou a decisão
+- **Decisão**: o que foi decidido e por que
+- **Alternativa descartada**: opção(ões) rejeitada(s) e justificativa
+- **Consequências**: efeitos colaterais (positivos e negativos)
+
+A criação de um novo ADR é obrigatória quando uma decisão arquitetural
+envolve trade-offs significativos entre múltiplas alternativas viáveis.
+
+### 16.7 Structural Change History
 
 | Date | Change | Reason |
 |------|--------|--------|
@@ -1135,7 +1148,7 @@ New tier, new deployment target, architectural pattern change:
 | 2026-06-28 | Added §11 Testing & Validation; renumbered §11–§15 to §12–§16; added §16 Document Evolution Contract | Living document governance + test suite |
 | 2026-06-28 | Phase 2: Added entrypoint script (render_config.py), expanded .env vars with table, updated Dockerfile CMD, serve_config placeholders, LiteLLM config, integration/security tests, new §5.6 Entrypoint Script | Build Core implementation |
 | 2026-06-28 | Phase 3: Updated §7.3 (pre-render workflow for cluster.yaml — decision record), expanded §7.2 (step-by-step EC2 + Compose guide with security group table), added §7.3 deploy automation script reference, extended test tables in §11 with Phase 3 tests (TestClusterYaml extended, TestClusterSecurity); new Governance & Maintainability Axioms in AGENTS.md (Decision Closure, Architecture Feedback Loop, Traceability Axiom) | AWS Deployment implementation |
-| 2026-06-28 | Phase 4: Updated §9.2 (added Prometheus 9090 as internal-only, Grafana 3000 as localhost-only); replaced §10.2 (real prometheus.yml with pinned images, no 9090 exposure, Grafana provisioning); updated §5.4 (monitoring services in docker-compose.yml table); extended §11 (Prometheus/Grafana config tests now active, new monitoring port isolation tests, Grafana datasource provisioning) | Monitoring implementation |
+| 2026-06-28 | Phase 5: Updated §16 (added §16.6 ADR.md decision records); created `docs/ADR.md` with 8 ADRs (phases 1-5); updated `LICENSE` (Apache 2.0); added cross-doc consistency tests (TestReadmeDirectoryTree, TestADRValidation); updated §18 footer | Final Documentation — revision + handoff |
 
 ---
 
@@ -1155,4 +1168,4 @@ New tier, new deployment target, architectural pattern change:
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.4 | Last updated: 2026-06-28 | Sections changed: §5.4 (docker-compose — monitoring services), §9.2 (mandatory mitigations — Prometheus/Grafana ports), §10.2 (Prometheus + Grafana — replaced example with real config, pinned images, Grafana provisioning), §11.5 (test file table — Phase 4 tests active), §11.6 (simulated testing — Prometheus/Grafana validation tests)*
+*Document version: 1.5 | Last updated: 2026-06-28 | Sections changed: §16.6 (added ADR.md — decision records), §17 (added ADR.md reference), §18 footer updated; LICENSE (Apache 2.0)*
