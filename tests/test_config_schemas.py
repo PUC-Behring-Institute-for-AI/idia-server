@@ -206,6 +206,69 @@ class TestClusterYaml:
             f"Head node should be CPU-only, got {instance_type}"
         )
 
+    # ── New Phase 3 tests ────────────────────────────────────────────────
+
+    def test_docker_image_pinned(self, config: dict | None) -> None:
+        """Docker image is pinned to an immutable tag, not :latest (§9.1)."""
+        if config is None:
+            pytest.skip("cluster.yaml not created yet")
+        docker_cfg = config.get("docker", {})
+        image = docker_cfg.get("image", "")
+        assert ":latest" not in image, (
+            f"cluster.yaml docker.image uses :latest: {image} (§9.1)"
+        )
+        import re
+        assert re.search(r":v?\d+\.\d+\.\d+", image), (
+            f"cluster.yaml docker.image not pinned to semver: {image}"
+        )
+
+    def test_gpu_worker_min_workers_zero(self, config: dict | None) -> None:
+        """GPU worker starts at 0 for scale-to-zero at node level (§13.2)."""
+        if config is None:
+            pytest.skip("cluster.yaml not created yet")
+        nodes = config.get("available_node_types", {})
+        worker = nodes.get("gpu_worker", {})
+        assert worker.get("min_workers") == 0, (
+            "gpu_worker.min_workers should be 0 (scale-to-zero for nodes)"
+        )
+
+    def test_file_mounts_rendered_config(self, config: dict | None) -> None:
+        """file_mounts maps rendered_config.yaml for the pre-render workflow."""
+        if config is None:
+            pytest.skip("cluster.yaml not created yet")
+        mounts = config.get("file_mounts", {})
+        assert "/app/rendered_config.yaml" in mounts, (
+            "file_mounts must map /app/rendered_config.yaml for pre-render workflow"
+        )
+        local_path = mounts["/app/rendered_config.yaml"]
+        assert local_path.endswith("rendered_config.yaml"), (
+            f"file_mounts source should point to rendered_config.yaml, got {local_path}"
+        )
+
+    def test_head_start_ray_dashboard_bound(self, config: dict | None) -> None:
+        """head_start_ray_commands must bind dashboard to 127.0.0.1 (§9.2)."""
+        if config is None:
+            pytest.skip("cluster.yaml not created yet")
+        start_cmds = config.get("head_start_ray_commands", [])
+        joined = " ".join(start_cmds)
+        assert "--dashboard-host=127.0.0.1" in joined, (
+            "head_start_ray_commands must include --dashboard-host=127.0.0.1 (§9.2)"
+        )
+
+    def test_head_node_no_gpu_resources(self, config: dict | None) -> None:
+        """Head node does not declare GPU resources (§7.3)."""
+        if config is None:
+            pytest.skip("cluster.yaml not created yet")
+        nodes = config.get("available_node_types", {})
+        head = nodes.get("head_node", {})
+        resources = head.get("resources", {})
+        assert "GPU" not in resources, (
+            "Head node should not declare GPU resources (§7.3)"
+        )
+        assert "gpu" not in str(resources).lower(), (
+            f"Head node resources may contain GPU reference: {resources}"
+        )
+
 
 # ── prometheus.yml (§10.2) ──────────────────────────────────────────────
 

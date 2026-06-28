@@ -408,13 +408,87 @@ curl -X POST http://localhost:4000/chat/completions \
 | **Ray Cluster Launcher (`ray up`)** | **Yes** — the cluster autoscaler provisions/terminates EC2 instances directly | Medium | Automatic physical GPU elasticity without Kubernetes — the default for this stack |
 | **KubeRay on EKS** | Yes, via k8s-native scheduling | Highest | Already running Kubernetes, or need multi-team GPU sharing |
 
-### 7.2 EC2 + Compose
+### 7.2 EC2 + Compose — single-instance deployment
 
-Identical to §6 — copy the same files to a GPU instance prepared per §6.1, run the same `docker compose up -d`. Security group: open inbound TCP **4000 only**; Ray's ingress (8000) and dashboard (8265) stay internal. This path has no elasticity and is included as the lowest-effort option when the Cluster Launcher's IAM/networking setup is not yet wanted.
+This path deploys the same stack from §5 and §6 on a single GPU EC2 instance,
+with no node-level autoscaling. It is the lowest-effort AWS option, suitable
+for evaluation, development, or fixed-capacity production workloads.
+
+**Prerequisites (on the EC2 instance):**
+- NVIDIA driver matching the GPU(s) (`nvidia-smi` must work)
+- NVIDIA Container Toolkit (`nvidia-ctk runtime configure --runtime=docker`)
+- Docker Engine with Compose v2 (`docker compose`)
+
+**Deployment steps:**
+
+```bash
+# 1. Launch an EC2 GPU instance (e.g. g5.xlarge, Ubuntu 22.04 or later)
+#    Security group: open inbound TCP 4000 from your IP/network only.
+#    NEVER open 8000, 8265, or 10001.
+
+# 2. SSH into the instance and install prerequisites
+sudo apt-get update
+sudo apt-get install -y nvidia-driver-545-server     # version depends on GPU
+sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+
+# 3. Copy the project to the instance (rsync recommended)
+rsync -avz --exclude '.git' --exclude '.env' \
+  ./idia-server/ ubuntu@<ec2-ip>:/home/ubuntu/idia-server/
+
+# 4. SSH to the instance and deploy
+ssh ubuntu@<ec2-ip>
+cd ~/idia-server
+cp .env.example .env
+# Edit .env with real values (HF_TOKEN, LITELLM_MASTER_KEY, etc.)
+nano .env
+
+# 5. Start the stack
+docker compose up -d
+
+# 6. Monitor model loading
+docker compose logs -f ray-head
+
+# 7. Verify
+docker compose exec ray-head ray status
+curl -X POST http://localhost:4000/chat/completions \
+  -H "Authorization: Bearer $(grep LITELLM_MASTER_KEY .env | cut -d= -f2)" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"llama-3.1-8b","messages":[{"role":"user","content":"ping"}]}'
+```
+
+**Security group rules:**
+
+| Direction | Protocol | Port | Source | Purpose |
+|-----------|----------|------|--------|---------|
+| Inbound | TCP | 4000 | Your IP / VPN CIDR | LiteLLM API — the only endpoint clients need |
+| Inbound | TCP | 22 | Your IP / VPN CIDR | SSH access (use Session Manager if available) |
+| Outbound | All | All | 0.0.0.0/0 | For HuggingFace downloads, AWS API calls |
+| Inbound | All | 8000, 8265, 10001 | **DENY** | Must never be reachable externally — see §9 |
+
+**Operational notes:**
+- Capacity is bounded by the instance's GPU count. To scale up, stop the
+  instance, change its type (e.g. g5.xlarge → g5.24xlarge), and restart.
+- This path has no node-level autoscaling (§3.2). Add the Cluster Launcher
+  (§7.3) when GPU elasticity is needed.
+- The same `docker-compose.yml` files work here as on a local machine —
+  no changes needed. This is the "implantação idêntica" property.
 
 ### 7.3 Ray Cluster Launcher — automatic physical GPU elasticity
 
-`cluster.yaml`:
+This path deploys the IDIA Server across a Ray cluster on EC2, with the
+cluster autoscaler automatically provisioning and terminating GPU instances
+based on demand. It is the recommended production deployment target for
+this stack.
+
+**Prerequisites:**
+- `ray[default]` installed locally (`pip install "ray[default]"`)
+- AWS credentials configured (`aws configure`)
+- A service-quota increase for the target GPU instance type (e.g. g5.xlarge)
+  in the chosen region
+
+**Configuration file:** `cluster.yaml` at the repository root.
 
 ```yaml
 cluster_name: inference-cluster
@@ -426,45 +500,104 @@ provider:
   region: us-east-1
 
 docker:
-  image: "rayproject/ray-ml:2.55.0-py311-gpu"
+  image: "rayproject/ray-ml:2.55.0-py311-gpu"     # pinned — no :latest
   container_name: "ray_container"
 
 available_node_types:
   head_node:
+    # CPU-only — runs Ray control plane, never holds model weights
     node_config:
-      InstanceType: m5.large      # CPU-only — coordinates and listens for requests, never runs a model replica
-    resources: {}
+      InstanceType: m5.large
+    resources:
+      CPU: 2
   gpu_worker:
+    # GPU node — runs inference replicas; autoscaled 0→4
     min_workers: 0
     max_workers: 4
     node_config:
-      InstanceType: g5.xlarge
+      InstanceType: g5.xlarge           # 1× A10G 24GB — 7-8B models
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 100
+            VolumeType: gp3
     resources: {}
 
 head_node_type: head_node
 
 file_mounts:
-  "/app/serve_config.yaml": "./serve_config.yaml"
+  "/app/rendered_config.yaml": "./rendered_config.yaml"
 
 head_setup_commands:
-  - pip install "ray[serve,llm]==2.55.0" vllm
+  - pip install --quiet "ray[serve,llm]==2.55.0" vllm
 
 head_start_ray_commands:
   - ray stop
-  - ray start --head --port=6379 --dashboard-host=127.0.0.1 --autoscaling-config=~/ray_bootstrap_config.yaml
+  - ray start --head --port=6379 --dashboard-host=127.0.0.1 \
+      --autoscaling-config=~/ray_bootstrap_config.yaml
 ```
+
+> **Decision record (2026-06-28):** `serve_config.yaml` contains `${VAR}`
+> placeholders (Phase 2 design). The Cluster Launcher's `file_mounts`
+> copies static files — it does not substitute env vars. Therefore the
+> config must be **pre-rendered** locally before `ray up`. Alternatives
+> considered: (A) setting env vars via `head_setup_commands` was rejected
+> because it would hardcode secrets into `cluster.yaml`; (B) uploading the
+> template and running `render_config.py` on the head node added unnecessary
+> complexity. Pre-rendering is the simplest approach and reuses the Phase 2
+> entrypoint.
+
+**Deployment workflow:**
 
 ```bash
-ray up -y cluster.yaml                                    # launches head node, bootstraps autoscaler
-ray exec cluster.yaml "serve run /app/serve_config.yaml"  # deploys the LLM app
-ray dashboard cluster.yaml                                # SSH-tunnels the dashboard to localhost — never expose 8265, §9.3
+# 1. Pre-render the config template (resolves ${VAR} from .env)
+python3 scripts/render_config.py --dry-run > rendered_config.yaml
+
+# 2. Launch the cluster
+ray up -y cluster.yaml
+
+# 3. Deploy the LLM app on the cluster
+ray exec cluster.yaml "serve run /app/rendered_config.yaml"
+
+# 4. Open a SSH tunnel to the dashboard (never expose port 8265)
+ray dashboard cluster.yaml
 ```
 
-The head node is CPU-only (`m5.large`): it runs Ray's control plane — GCS, dashboard, autoscaler — and never holds model weights, so a GPU on it would sit idle. Worker nodes (`gpu_worker`) carry the replicas and scale from zero.
+**Automated deployment (wrapper script):**
 
-Adding capacity: raise `max_workers` and re-run `ray up -y cluster.yaml`. The cluster autoscaler launches additional `g5.xlarge` instances on its own whenever the replica autoscaler (§3.2) requests more capacity than current nodes provide, and terminates idle ones automatically — `idle_timeout_minutes` controls how long an empty node survives before termination.
+```bash
+# Validates .env, pre-renders, runs ray up + ray exec in one step
+./scripts/deploy_cluster.sh
 
-A service-quota increase for the chosen GPU instance family is a prerequisite; the autoscaler cannot provision capacity AWS has not approved for the account.
+# Dry-run mode: validates .env and pre-renders only
+./scripts/deploy_cluster.sh --dry-run
+```
+
+See `scripts/deploy_cluster.sh` for the complete automation script.
+
+**Architecture:**
+
+The head node is CPU-only (`m5.large`): it runs Ray's control plane — GCS,
+dashboard, autoscaler — and never holds model weights, so a GPU on it would
+sit idle. Worker nodes (`gpu_worker`) carry the vLLM replicas and scale from
+zero.
+
+Adding capacity: raise `max_workers` and re-run `ray up -y cluster.yaml`. The
+cluster autoscaler launches additional `g5.xlarge` instances on its own
+whenever the replica autoscaler (§3.2) requests more capacity than current
+nodes provide, and terminates idle ones automatically — `idle_timeout_minutes`
+controls how long an empty node survives before termination.
+
+A service-quota increase for the chosen GPU instance family is a prerequisite;
+the autoscaler cannot provision capacity AWS has not approved for the account.
+
+**Security invariants (from §9):**
+- Dashboard bound to `127.0.0.1` via `--dashboard-host=127.0.0.1` — mandatory
+  mitigation against ShadowRay/CVE-2023-48022.
+- Docker image pinned to `rayproject/ray-ml:2.55.0-py311-gpu` — no `:latest`.
+- Head node is CPU-only — no GPU declared in its `resources` block.
+- Worker nodes use `file_mounts` for configuration, never network-exposed
+  management endpoints.
 
 ### 7.4 KubeRay / EKS
 
@@ -665,7 +798,7 @@ artifacts exist.
 | `tests/test_docs.py` | 1 | `docs` | Required file existence, markdown headers, governance sections, version footer |
 | `tests/test_config_schemas.py` | 1 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example` |
 | `tests/test_integration.py` | 2 | `integration` | `render_config.py` env var substitution (required/optional), dry-run mode, error paths; Compose consistency (build source, image pinning, env var propagation) |
-| `tests/test_security.py` | 2 | `security` | Port isolation (only 4000 exposed), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding diagnostics |
+| `tests/test_security.py` | 2, 3 | `security` | Port isolation (only 4000 exposed), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 3: cluster.yaml security invariants (dashboard bound to 127.0.0.1, pinned image, CPU-only head node) |
 
 ### 11.6 Simulated integration testing (Mac/non-GPU environments)
 
@@ -680,8 +813,14 @@ structures without real infrastructure:
   invalid YAML templates) via `--dry-run` flag and direct function calls.
 - `TestComposeConsistency` validates `docker-compose.yml` structure
   (build context, image tags, env var lists) by parsing YAML only.
-- `TestSecurityPortIsolation` verifies that only port 4000 appears in
-  `ports:` sections by inspecting the YAML, not by running containers.
+- `TestClusterYaml` (Phase 3) validates the `cluster.yaml` structure,
+  including dashboard binding, image pinning, GPU worker scaling config,
+  and file_mounts — all by parsing YAML, no cloud credentials needed.
+- `TestClusterSecurity` (Phase 3) validates `cluster.yaml` invariants
+  from a security perspective: dashboard bound to 127.0.0.1, no `:latest`,
+  CPU-only head node — all by inspecting the YAML file content.
+- `TestPortIsolation` verifies that only port 4000 appears in `ports:`
+  sections by inspecting the YAML, not by running containers.
 
 Tests that genuinely require GPU (`docker compose build`, `ray status`,
 E2E inference) are documented and intended for pre-release validation on
@@ -904,6 +1043,7 @@ New tier, new deployment target, architectural pattern change:
 | 2026-06-28 | Document created | Initial architecture specification |
 | 2026-06-28 | Added §11 Testing & Validation; renumbered §11–§15 to §12–§16; added §16 Document Evolution Contract | Living document governance + test suite |
 | 2026-06-28 | Phase 2: Added entrypoint script (render_config.py), expanded .env vars with table, updated Dockerfile CMD, serve_config placeholders, LiteLLM config, integration/security tests, new §5.6 Entrypoint Script | Build Core implementation |
+| 2026-06-28 | Phase 3: Updated §7.3 (pre-render workflow for cluster.yaml — decision record), expanded §7.2 (step-by-step EC2 + Compose guide with security group table), added §7.3 deploy automation script reference, extended test tables in §11 with Phase 3 tests (TestClusterYaml extended, TestClusterSecurity); new Governance & Maintainability Axioms in AGENTS.md (Decision Closure, Architecture Feedback Loop, Traceability Axiom) | AWS Deployment implementation |
 
 ---
 
@@ -923,4 +1063,4 @@ New tier, new deployment target, architectural pattern change:
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.2 | Last updated: 2026-06-28 | Sections changed: §4.3 (LiteLLM config — master_key notation), §5.2 (Dockerfile CMD — entrypoint), §5.3 (serve_config — placeholders), §5.5 (.env — expanded table), added §5.6 (Entrypoint Script), §11 (Testing — integration/security details, simulated testing, file reference)*
+*Document version: 1.3 | Last updated: 2026-06-28 | Sections changed: §7.2 (EC2 + Compose guide — expanded), §7.3 (pre-render workflow, decision record, deploy script), §11.5 (test file table — cluster security tests), §11.6 (simulated testing — cluster.yaml validation)*

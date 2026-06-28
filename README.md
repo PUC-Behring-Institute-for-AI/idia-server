@@ -4,7 +4,7 @@
 e carregamento sob demanda de modelos, implantável de forma idêntica em um host
 local multi-GPU e na AWS.**
 
-[![Phase](https://img.shields.io/badge/phase-1%20Foundation-blueviolet)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
+[![Phase](https://img.shields.io/badge/phase-3%20AWS%20Deployment-green)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![Stack](https://img.shields.io/badge/stack-Ray%20Serve%20%7C%20vLLM%20%7C%20LiteLLM-orange)]()
 [![License](https://img.shields.io/badge/license-TBD-lightgrey)]()
@@ -252,14 +252,18 @@ idia-server/
 ├── serve_config.yaml      ← Configuração Ray Serve (Phase 2 ⏳)
 ├── docker-compose.yml     ← Orquestração local / single-EC2 (Phase 2 ⏳)
 ├── config.yaml            ← Roteamento LiteLLM (Phase 2 ⏳)
-├── cluster.yaml           ← Definição do cluster AWS (Phase 3 ⏳)
+├── cluster.yaml           ← Definição do cluster AWS (Phase 3 ✓)
 ├── prometheus.yml         ← Configuração de monitoramento (Phase 4 ⏳)
 ├── scripts/               ← Utilitários (entrypoints, helpers)
+│   ├── render_config.py   ← Entrypoint Python — substitui placeholders env var (Phase 2 ✓)
+│   └── deploy_cluster.sh  ← Deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
 ├── tests/                 ← Suíte de testes (Phase 1 ✓)
 │   ├── __init__.py
 │   ├── conftest.py        ← Fixtures compartilhadas
 │   ├── test_docs.py       ← Testes de estrutura de documentação
-│   └── test_config_schemas.py  ← Testes de schema YAML
+│   ├── test_config_schemas.py  ← Testes de schema YAML
+│   ├── test_integration.py     ← Testes de integração simulada (Phase 2 ✓)
+│   └── test_security.py        ← Testes de segurança (Phase 2 ✓, Phase 3 ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← Documento vivo de arquitetura (Phase 1 ✓)
 │   └── ...                ← Futuros: ADR.md, GLOSSARY.md conforme necessário
@@ -284,8 +288,8 @@ humana antes de avançar para a próxima.
 | Fase | Nome | Status | Entregáveis | Depende de |
 |------|------|--------|-------------|------------|
 | **1** | Fundação + AGENTS.md | ✅ **Concluída** | `AGENTS.md`, `.gitignore`, `pyproject.toml`, `tests/`, `docs/ARCHITECTURE.md` atualizado, `README.md` | — |
-| **2** | Build Core | ⏳ Pendente | `Dockerfile.ray`, `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `.env.example`, entrypoint script | Fase 1 |
-| **3** | Deploy AWS | ⏳ Pendente | `cluster.yaml` (Ray Cluster Launcher), instruções de deploy | Fase 2 |
+| **2** | Build Core | ✅ **Concluída** | `Dockerfile.ray`, `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `.env.example`, entrypoint script `render_config.py` | Fase 1 |
+| **3** | Deploy AWS | ✅ **Concluída** | `cluster.yaml` (Ray Cluster Launcher), `scripts/deploy_cluster.sh`, guia EC2 + Compose expandido, testes de segurança para cluster | Fase 2 |
 | **4** | Monitoramento | ⏳ Pendente | `prometheus.yml`, integração Grafana no `docker-compose.yml`, alertas | Fase 2 |
 | **5** | Documentação Final | ⏳ Pendente | `README.md` (revisão final), verificação de consistência código-arquitetura, handoff | Fases 1–4 |
 
@@ -350,7 +354,7 @@ Em `tests/test_config_schemas.py`:
 | `TestServeConfig` | `serve_config.yaml` | `proxy_location: EveryNode`, `http_options.port: 8000`, `applications` é lista não-vazia |
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
 | `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
-| `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only |
+| `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only; dashboard bound a `127.0.0.1`; imagem pinada; pre-render workflow |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000` |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
 

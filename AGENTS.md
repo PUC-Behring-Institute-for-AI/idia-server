@@ -41,10 +41,11 @@ idia-server/
 ├── docker-compose.yml     ← orquestração local / single-EC2 (Phase 2 ✓)
 ├── serve_config.yaml      ← config do Ray Serve (Phase 2 ✓)
 ├── config.yaml            ← roteamento LiteLLM (Phase 2 ✓)
-├── cluster.yaml           ← definição do cluster AWS (Phase 3)
+├── cluster.yaml           ← definição do cluster AWS (Phase 3 ✓)
 ├── prometheus.yml         ← monitoring scrape config (Phase 4)
 ├── scripts/               ← utilitários (entrypoint, helpers)
-│   └── render_config.py   ← entrypoint Python — substitui placeholders env var (Phase 2 ✓)
+│   ├── render_config.py   ← entrypoint Python — substitui placeholders env var (Phase 2 ✓)
+│   └── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
 ├── tests/                 ← suíte de testes (pytest)
 │   ├── __init__.py
 │   ├── conftest.py        ← fixtures compartilhadas
@@ -64,7 +65,7 @@ idia-server/
 |-------|------|-------------|
 | **1** | Foundation + AGENTS.md + README.md | — |
 | **2** | Build Core | Phase 1 | ✅ |
-| **3** | AWS Deployment | Phase 2 |
+| **3** | AWS Deployment | Phase 2 | ✅ |
 | **4** | Monitoring | Phase 2 |
 | **5** | Final Documentation (revision + handoff) | Phases 1–4 |
 
@@ -135,6 +136,95 @@ antes de qualquer outro trabalho.
 
 Esta regra está em vigor desde a Fase 2 e se aplica a todas as fases
 subsequentes.
+
+---
+
+## Governance & Maintainability Axioms (AXIOM — NON-OVERRIDABLE)
+
+Estas regras existem porque a rastreabilidade de decisões e a facilidade de
+manutenção são prioridades do projeto. Um novo membro da equipe ou um
+agente OpenCode deve conseguir entender qualquer parte do sistema usando
+apenas a documentação e os commits — sem entrevistar o autor original.
+
+### 0. Decision Closure Rule — Planos só existem com decisões fechadas
+
+Nenhum plano de implementação é considerado completo enquanto houver
+decisões de projeto pendentes. O autor do plano deve:
+
+1. Identificar todas as questões em aberto durante a análise do problema.
+2. Documentar cada questão explicitamente no plano.
+3. **Fechar cada decisão** antes de concluir o plano, usando:
+   - Melhores práticas da área quando o usuário não tiver preferência.
+   - A recomendação fundamentada do autor quando o usuário delegar.
+   - Investigação adicional (skills, pesquisa, código existente) quando
+     necessário — nunca palpites não verificados.
+4. Registrar a decisão e sua justificativa no plano ou na documentação.
+
+**Violação:** um plano apresentado com questões em aberto não aprovadas
+não autoriza implementação. A implementação deve parar até que todas as
+decisões estejam fechadas.
+
+**Exemplo:** se o plano levanta "qual instância EC2 usar?" sem responder,
+o plano está incompleto. O autor deve pesquisar, recomendar e documentar
+a escolha (ex.: g5.xlarge por 1× A10G 24GB — adequado para modelos 7-8B).
+
+### 1. Architecture Feedback Loop — Toda descoberta de implementação realimenta a arquitetura
+
+A implementação inevitavelmente revela detalhes não antecipados na
+arquitetura original. Quando isso acontece:
+
+1. A descoberta é registrada.
+2. A arquitetura (`ARCHITECTURE.md`) é atualizada para refletir o
+   entendimento corrigido.
+3. A implementação prossegue sobre a arquitetura atualizada — nunca
+   sobre a versão desatualizada.
+
+**Ciclo:** `Arquitetura → Implementação → Descoberta → Atualização da
+Arquitetura → Continuação da Implementação`
+
+**Isso se aplica a:**
+- Parâmetros que se revelam diferentes do esperado.
+- Workflows que exigem passos adicionais não documentados.
+- Dependências ou versões que se provam incompatíveis.
+- Qualquer diferença entre o comportamento real e o especificado.
+
+**Registro:** cada iteração do ciclo deve ser rastreável via commit ou
+entrada na Structural Change History do `ARCHITECTURE.md`.
+
+### 2. Traceability Axiom — Todo commit deve ser compreensível por um novo membro 6 meses depois
+
+Um commit não é apenas "o que mudou" — é **por que mudou**, qual decisão
+foi tomada, e qual alternativa foi descartada.
+
+| Critério | Obrigatório? | Exemplo (bom) | Exemplo (ruim) |
+|----------|-------------|---------------|----------------|
+| **Por que** esta mudança existe? | ✅ | "cluster.yaml: pre-render workflow porque serve_config.yaml tem placeholders ${VAR} desde a Fase 2 — Cluster Launcher não suporta env vars nativamente" | "cluster.yaml: fix worker config" |
+| **Qual decisão** foi tomada? | ✅ | "cluster.yaml: g5.xlarge (1× A10G 24GB) — melhor custo-benefício para modelos 7-8B; ver análise em §14.2" | "cluster.yaml: add gpu worker" |
+| **Qual alternativa** foi descartada? | ✅ | "Opção A (env vars via head_setup_commands) descartada porque hardcoda secrets no cluster.yaml" | "cluster.yaml: fix worker type" |
+| **O que** mudou (diff)? | ✅ (implícito no git) | — | — |
+
+**Na prática:** a mensagem do commit deve conter, em linguagem natural,
+as respostas para "por que", "qual decisão" e "qual alternativa".
+
+**Documentação derivada:** quando uma decisão de implementação modifica
+a arquitetura, o `ARCHITECTURE.md` deve ser atualizado no mesmo commit,
+e a entrada na Structural Change History deve referenciar o commit.
+
+### 3. Maintainability Over Novelty — Preferir o conhecido sobre o novo
+
+Quando múltiplas abordagens técnicas resolvem o mesmo problema:
+
+1. Preferir a abordagem mais documentada, mais testada e mais conhecida
+   pela equipe.
+2. Abordagens experimentais ou de vanguarda exigem justificativa
+   explícita de por que a abordagem estabelecida não atende.
+3. "Porque é mais novo/mais rápido/melhor" não é justificativa suficiente
+   sem evidência mensurável para o caso de uso específico.
+4. Se uma abordagem nova é escolhida, documentar explicitamente o que
+   se espera ganhar e qual o plano de fallback.
+
+**Exceção:** quando o problema ativo não pode ser resolvido por
+abordagens estabelecidas — nesse caso, documentar por que.
 
 ---
 
@@ -238,7 +328,7 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestServeConfig` | `serve_config.yaml` | `proxy_location: EveryNode`, `http_options.port: 8000`, `applications` é lista não-vazia |
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
 | `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
-| `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only |
+| `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only; dashboard bound a 127.0.0.1; imagem Docker pinada; gpu_worker min_workers=0; file_mounts mapeia rendered_config |
 | `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000` |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
 
@@ -268,6 +358,9 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestImagePinning.test_compose_no_latest` | Nenhum serviço no Compose usa `:latest` |
 | `TestTrustBoundaries.test_litellm_config_has_master_key` | config.yaml declara `general_settings.master_key` |
 | `TestDashboardBinding.test_dashboard_host_set_to_localhost` | serve_config.yaml http_options.host=0.0.0.0 (proxy interno)
+| `TestClusterSecurity.test_cluster_dashboard_bound_localhost` | cluster.yaml contém `--dashboard-host=127.0.0.1`
+| `TestClusterSecurity.test_cluster_image_pinned` | cluster.yaml não usa imagem `:latest`
+| `TestClusterSecurity.test_cluster_head_node_cpu_only` | cluster.yaml head node é CPU-only (§7.3)
 
 ### Política de Skipping
 
