@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "idia-server"
+description = "Self-hosted LLM inference server with automatic GPU elasticity and on-demand model loading"
+requires-python = ">=3.11"
+dynamic = ["version"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+markers = [
+    "docs: documentation structure and consistency tests",
+    "config: configuration file schema validation tests",
+    "integration: tests that require Docker/Compose (skip by default)",
+    "security: tests that verify security constraints",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
