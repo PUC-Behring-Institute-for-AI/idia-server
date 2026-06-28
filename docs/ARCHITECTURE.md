@@ -293,6 +293,37 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
     command: ["--config=/app/config.yaml"]
     restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: "1g"               # prevent unbounded /prometheus growth
+    restart: unless-stopped
+    # NO ports: published — Prometheus is queried by Grafana on internal
+    # Compose network. For admin access: docker compose exec prometheus sh.
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    depends_on:
+      - prometheus
+    ports:
+      - "127.0.0.1:3000:3000"       # localhost only — no external access
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+    name: idia_prometheus_data
+  grafana_data:
+    name: idia_grafana_data
 ```
 
 ### 5.5 `.env`
@@ -673,11 +704,12 @@ Ray's dashboard and Jobs API were **designed without authentication**, on the ex
 
 **Mandatory mitigations:**
 
-1. Never map the dashboard port (8265) or Client port (10001) to a host port, on Compose or on the Cluster Launcher. Verify with `docker compose ps` / `docker port` after every deploy.
+1. Never map the dashboard port (8265), Client port (10001), or Prometheus port (9090) to a host port, on Compose or on the Cluster Launcher. Verify with `docker compose ps` / `docker port` after every deploy.
 2. Bind the dashboard to `127.0.0.1` (as in §7.3); reach it remotely only via `ray dashboard cluster.yaml` (SSH tunnel) or a reverse proxy with its own authentication.
 3. Ray ≥ 2.52.0 ships built-in token authentication — enable it as a second layer, not a replacement for network isolation.
 4. Run Ray ≥ 2.54.0 to close CVE-2026-27482.
 5. Treat the cluster like a database with no query authorization: any network path to it is equivalent to root on every node.
+6. Grafana (port 3000) is bound to `127.0.0.1` — accessible only from the Docker host, not from external networks.
 
 ### 9.3 Ray Serve's ingress has no per-request key
 
@@ -698,37 +730,86 @@ Ray Serve LLM's `OpenAiIngress` does not check a per-request API key by default.
 
 The two most actionable engine signals: `gpu_cache_usage_perc` approaching 1.0 together with rising `num_preemptions_total` means the KV cache is undersized for current load — the engine is evicting and recomputing context, degrading latency before it errors. Ray Serve LLM emits its engine-level metrics through the same Prometheus endpoint as Ray's cluster metrics, so one scrape config covers both.
 
-### 10.2 Minimal Prometheus + Grafana
+### 10.2 Prometheus + Grafana (Phase 4)
 
-Append to `docker-compose.yml`:
+Implemented as two additional services in `docker-compose.yml`, plus a
+provisioned Grafana datasource — no manual configuration needed after
+`docker compose up`.
 
-```yaml
-  prometheus:
-    image: prom/prometheus:latest
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml
-    ports: ["9090:9090"]
-
-  grafana:
-    image: grafana/grafana:latest
-    ports: ["3000:3000"]
-```
-
-`prometheus.yml`:
+**Prometheus** (`prometheus.yml` at the repository root):
 
 ```yaml
 global:
   scrape_interval: 15s
+  evaluation_interval: 15s
+
 scrape_configs:
   - job_name: ray-serve
     static_configs:
-      - targets: ["ray-head:8080"]   # Ray metrics export port — distinct from dashboard (8265) and ingress (8000)
+      - targets:
+          - "ray-head:8080"      # Ray metrics export port — distinct from
+                                 # dashboard (8265) and ingress (8000)
+        labels:
+          layer: orchestration
+
   - job_name: litellm
     static_configs:
-      - targets: ["litellm:4000"]
+      - targets:
+          - "litellm:4000"       # LiteLLM metrics (/metrics) on the same
+                                 # port as the API
+        labels:
+          layer: gateway
 ```
 
-vLLM and Ray both publish importable Grafana dashboard JSON (request latency, TTFT, throughput, replica counts) — import these rather than building from scratch.
+Key properties:
+- Port 9090 is **not exposed to the host** — Prometheus is queried by
+  Grafana on the internal Compose network. For admin access:
+  `docker compose exec prometheus sh`.
+- Image pinned to `prom/prometheus:v2.55.0` — no `:latest` (§9.1).
+- Scrape interval 15s — appropriate for inference servers; engine-level
+  metrics (TTFT, cache usage) change at request granularity, not
+  sub-second.
+
+**Grafana** with automatic provisioning:
+
+```yaml
+grafana:
+  image: grafana/grafana:11.4.0
+  depends_on:
+    - prometheus
+  ports:
+    - "127.0.0.1:3000:3000"     # localhost only — no external access
+  volumes:
+    - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+    - grafana_data:/var/lib/grafana
+```
+
+Key properties:
+- Bound to `127.0.0.1` — only the Docker host can access the UI
+  (§9.3 mitigation #6).
+- Image pinned to `grafana/grafana:11.4.0` — no `:latest` (§9.1).
+- **Automatic datasource provisioning**: `grafana/datasources/datasource.yml`
+  configures Prometheus as the default datasource pointing to
+  `http://prometheus:9090` — no manual setup.
+- **Dashboard directory**: place downloaded JSON files from the official
+  Ray Serve and vLLM dashboards in `grafana/dashboards/` for automatic
+  provisioning. Links: search "Ray" and "vLLM" on
+  https://grafana.com/grafana/dashboards/.
+
+**Warning:** The Ray and vLLM dashboard JSONs change between versions.
+Do not version them in this repository — download and import the versions
+matching `rayproject/ray-ml:2.55.0` and the bundled vLLM version.
+
+**Accessing Grafana:**
+
+```bash
+# Set up a tunnel if needed (from your laptop to the host):
+ssh -L 3000:localhost:3000 user@host
+# Then open:
+open http://localhost:3000
+# Default credentials: admin / admin (change on first login)
+```
 
 ### 10.3 Recommended alerts
 
@@ -796,9 +877,9 @@ artifacts exist.
 | File | Phase | Marker | Key tests |
 |------|-------|--------|-----------|
 | `tests/test_docs.py` | 1 | `docs` | Required file existence, markdown headers, governance sections, version footer |
-| `tests/test_config_schemas.py` | 1 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example` |
+| `tests/test_config_schemas.py` | 1, 4 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example`; Phase 4: extended Prometheus target validation, Grafana datasource provisioning config |
 | `tests/test_integration.py` | 2 | `integration` | `render_config.py` env var substitution (required/optional), dry-run mode, error paths; Compose consistency (build source, image pinning, env var propagation) |
-| `tests/test_security.py` | 2, 3 | `security` | Port isolation (only 4000 exposed), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 3: cluster.yaml security invariants (dashboard bound to 127.0.0.1, pinned image, CPU-only head node) |
+| `tests/test_security.py` | 2, 3, 4 | `security` | Port isolation (only 4000 externally accessible), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 3: cluster.yaml security invariants (dashboard bound to 127.0.0.1, pinned image, CPU-only head node). Phase 4: Prometheus port (9090) not published, Grafana bound to 127.0.0.1 |
 
 ### 11.6 Simulated integration testing (Mac/non-GPU environments)
 
@@ -819,8 +900,18 @@ structures without real infrastructure:
 - `TestClusterSecurity` (Phase 3) validates `cluster.yaml` invariants
   from a security perspective: dashboard bound to 127.0.0.1, no `:latest`,
   CPU-only head node — all by inspecting the YAML file content.
-- `TestPortIsolation` verifies that only port 4000 appears in `ports:`
-  sections by inspecting the YAML, not by running containers.
+- `TestPortIsolation` verifies that only port 4000 is accessible externally
+  (127.0.0.1:3000 is permitted for Grafana) by inspecting the YAML, not
+  by running containers.
+- `TestPrometheusConfig` (Phase 4) validates the `prometheus.yml` structure:
+  scrape interval, target addresses (ray-head:8080, litellm:4000), and the
+  absence of Prometheus-level alert rules (delegated to Grafana).
+- `TestGrafanaDatasourceConfig` (Phase 4) validates the Grafana datasource
+  provisioning YAML: URL points to `http://prometheus:9090`, access is
+  `proxy`, datasource is Prometheus and set as default.
+- `TestMonitoringPortIsolation` (Phase 4) verifies that Prometheus (9090)
+  is not published in any `ports:` section and that Grafana (3000) is
+  bound to `127.0.0.1` only.
 
 Tests that genuinely require GPU (`docker compose build`, `ray status`,
 E2E inference) are documented and intended for pre-release validation on
@@ -1044,6 +1135,7 @@ New tier, new deployment target, architectural pattern change:
 | 2026-06-28 | Added §11 Testing & Validation; renumbered §11–§15 to §12–§16; added §16 Document Evolution Contract | Living document governance + test suite |
 | 2026-06-28 | Phase 2: Added entrypoint script (render_config.py), expanded .env vars with table, updated Dockerfile CMD, serve_config placeholders, LiteLLM config, integration/security tests, new §5.6 Entrypoint Script | Build Core implementation |
 | 2026-06-28 | Phase 3: Updated §7.3 (pre-render workflow for cluster.yaml — decision record), expanded §7.2 (step-by-step EC2 + Compose guide with security group table), added §7.3 deploy automation script reference, extended test tables in §11 with Phase 3 tests (TestClusterYaml extended, TestClusterSecurity); new Governance & Maintainability Axioms in AGENTS.md (Decision Closure, Architecture Feedback Loop, Traceability Axiom) | AWS Deployment implementation |
+| 2026-06-28 | Phase 4: Updated §9.2 (added Prometheus 9090 as internal-only, Grafana 3000 as localhost-only); replaced §10.2 (real prometheus.yml with pinned images, no 9090 exposure, Grafana provisioning); updated §5.4 (monitoring services in docker-compose.yml table); extended §11 (Prometheus/Grafana config tests now active, new monitoring port isolation tests, Grafana datasource provisioning) | Monitoring implementation |
 
 ---
 
@@ -1063,4 +1155,4 @@ New tier, new deployment target, architectural pattern change:
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.3 | Last updated: 2026-06-28 | Sections changed: §7.2 (EC2 + Compose guide — expanded), §7.3 (pre-render workflow, decision record, deploy script), §11.5 (test file table — cluster security tests), §11.6 (simulated testing — cluster.yaml validation)*
+*Document version: 1.4 | Last updated: 2026-06-28 | Sections changed: §5.4 (docker-compose — monitoring services), §9.2 (mandatory mitigations — Prometheus/Grafana ports), §10.2 (Prometheus + Grafana — replaced example with real config, pinned images, Grafana provisioning), §11.5 (test file table — Phase 4 tests active), §11.6 (simulated testing — Prometheus/Grafana validation tests)*

@@ -4,7 +4,7 @@
 e carregamento sob demanda de modelos, implantável de forma idêntica em um host
 local multi-GPU e na AWS.**
 
-[![Phase](https://img.shields.io/badge/phase-3%20AWS%20Deployment-green)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
+[![Phase](https://img.shields.io/badge/phase-4%20Monitoring-blue)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![Stack](https://img.shields.io/badge/stack-Ray%20Serve%20%7C%20vLLM%20%7C%20LiteLLM-orange)]()
 [![License](https://img.shields.io/badge/license-TBD-lightgrey)]()
@@ -253,10 +253,11 @@ idia-server/
 ├── docker-compose.yml     ← Orquestração local / single-EC2 (Phase 2 ⏳)
 ├── config.yaml            ← Roteamento LiteLLM (Phase 2 ⏳)
 ├── cluster.yaml           ← Definição do cluster AWS (Phase 3 ✓)
-├── prometheus.yml         ← Configuração de monitoramento (Phase 4 ⏳)
+├── prometheus.yml         ← Configuração de monitoramento (Phase 4 ✓)
 ├── scripts/               ← Utilitários (entrypoints, helpers)
 │   ├── render_config.py   ← Entrypoint Python — substitui placeholders env var (Phase 2 ✓)
 │   └── deploy_cluster.sh  ← Deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
+├── grafana/               ← Dashboards e datasources (Phase 4 ✓)
 ├── tests/                 ← Suíte de testes (Phase 1 ✓)
 │   ├── __init__.py
 │   ├── conftest.py        ← Fixtures compartilhadas
@@ -290,7 +291,7 @@ humana antes de avançar para a próxima.
 | **1** | Fundação + AGENTS.md | ✅ **Concluída** | `AGENTS.md`, `.gitignore`, `pyproject.toml`, `tests/`, `docs/ARCHITECTURE.md` atualizado, `README.md` | — |
 | **2** | Build Core | ✅ **Concluída** | `Dockerfile.ray`, `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `.env.example`, entrypoint script `render_config.py` | Fase 1 |
 | **3** | Deploy AWS | ✅ **Concluída** | `cluster.yaml` (Ray Cluster Launcher), `scripts/deploy_cluster.sh`, guia EC2 + Compose expandido, testes de segurança para cluster | Fase 2 |
-| **4** | Monitoramento | ⏳ Pendente | `prometheus.yml`, integração Grafana no `docker-compose.yml`, alertas | Fase 2 |
+| **4** | Monitoramento | ✅ **Concluída** | `prometheus.yml`, integração Grafana no `docker-compose.yml` com provisioning automático de datasource, alertas documentados, testes de segurança para portas de monitoramento | Fase 2 |
 | **5** | Documentação Final | ⏳ Pendente | `README.md` (revisão final), verificação de consistência código-arquitetura, handoff | Fases 1–4 |
 
 Ao final de cada fase, a suíte de testes é executada para garantir que
@@ -455,16 +456,32 @@ a propriedade que torna o deploy local e cloud idênticos do lado do consumidor.
 
 ## 11. Monitoramento
 
-O monitoramento será implementado na **Fase 4** e incluirá:
+O monitoramento foi implementado na **Fase 4** com Prometheus + Grafana,
+integrados ao `docker-compose.yml`:
 
-| Camada | Métricas exportadas | Endpoint |
-|--------|-------------------|----------|
-| **vLLM** (cada réplica) | `time_to_first_token_seconds`, `e2e_request_latency_seconds`, `gpu_cache_usage_perc`, `num_preemptions_total`, `num_requests_waiting` | Formato Prometheus (embutido) |
-| **Ray Serve** | Contagem de réplicas por deployment, profundidade de fila, eventos de autoscaling | Métricas Prometheus embutidas |
+| Camada | Métricas exportadas | Endpoint Prometheus |
+|--------|-------------------|-------------------|
+| **vLLM** (cada réplica) | `time_to_first_token_seconds`, `e2e_request_latency_seconds`, `gpu_cache_usage_perc`, `num_preemptions_total`, `num_requests_waiting` | `ray-head:8080` (via Ray Serve) |
+| **Ray Serve** | Contagem de réplicas por deployment, profundidade de fila, eventos de autoscaling | `ray-head:8080` |
 | **Ray Cluster** | Contagem de nós, utilização GPU por nó, decisões do autoscaler | Dashboard (porta 8265, interna) |
-| **LiteLLM** | Custo por chave/equipe, contagem de requisições, latência, eventos de fallback | Integração Prometheus embutida |
+| **LiteLLM** | Custo por chave/equipe, contagem de requisições, latência, eventos de fallback | `litellm:4000` |
 
-### Alertas planejados
+**Infraestrutura:**
+
+| Componente | Imagem | Porta exposta |
+|-----------|--------|---------------|
+| Prometheus | `prom/prometheus:v2.55.0` | Nenhuma (interna — acessado pelo Grafana) |
+| Grafana | `grafana/grafana:11.4.0` | `127.0.0.1:3000` (localhost apenas) |
+
+O datasource Prometheus é configurado automaticamente via provisioning
+(`grafana/datasources/`). Dashboards oficiais do Ray Serve e vLLM podem
+ser baixados e colocados em `grafana/dashboards/` para importação
+automática.
+
+**Iniciar o monitoramento:** já está incluso no `docker compose up -d`.
+Acessar Grafana: `open http://localhost:3000` (credenciais: admin/admin).
+
+### Alertas recomendados (configurar via Grafana UI)
 
 | Alerta | Condição | Por quê |
 |--------|----------|---------|
@@ -472,8 +489,6 @@ O monitoramento será implementado na **Fase 4** e incluirá:
 | Teto de réplicas | Deployment em `max_replicas` por >10 min | O teto do autoscaling, não a GPU, é o gargalo |
 | Cluster no `max_workers` | Nós fixados no teto | Na AWS, limitado pelo `cluster.yaml` |
 | Dashboard acessível | Qualquer hit externo em 8265/10001 | Deveria ser impossível — tratar como incidente |
-
-Para detalhes, consulte [`docs/ARCHITECTURE.md §10`](docs/ARCHITECTURE.md#10-monitoring--observability).
 
 ---
 

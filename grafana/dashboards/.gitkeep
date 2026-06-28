@@ -1,0 +1,9 @@
+# Dashboard JSONs go here
+#
+# Download the official Ray and vLLM Grafana dashboards and place the JSON
+# files in this directory for automatic provisioning:
+#
+#   Ray Serve:   https://grafana.com/grafana/dashboards/ (search "Ray")
+#   vLLM:        https://grafana.com/grafana/dashboards/ (search "vLLM")
+#
+# See docs/ARCHITECTURE.md 0.2 for details.

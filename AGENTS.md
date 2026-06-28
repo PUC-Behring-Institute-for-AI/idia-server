@@ -42,10 +42,13 @@ idia-server/
 ├── serve_config.yaml      ← config do Ray Serve (Phase 2 ✓)
 ├── config.yaml            ← roteamento LiteLLM (Phase 2 ✓)
 ├── cluster.yaml           ← definição do cluster AWS (Phase 3 ✓)
-├── prometheus.yml         ← monitoring scrape config (Phase 4)
+├── prometheus.yml         ← monitoring scrape config (Phase 4 ✓)
 ├── scripts/               ← utilitários (entrypoint, helpers)
 │   ├── render_config.py   ← entrypoint Python — substitui placeholders env var (Phase 2 ✓)
 │   └── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
+├── grafana/               ← dashboards e datasources (Phase 4 ✓)
+│   ├── datasources/       ← provisioning do datasource Prometheus
+│   └── dashboards/        ← JSONs importados dos dashboards oficiais Ray/vLLM
 ├── tests/                 ← suíte de testes (pytest)
 │   ├── __init__.py
 │   ├── conftest.py        ← fixtures compartilhadas
@@ -66,7 +69,7 @@ idia-server/
 | **1** | Foundation + AGENTS.md + README.md | — |
 | **2** | Build Core | Phase 1 | ✅ |
 | **3** | AWS Deployment | Phase 2 | ✅ |
-| **4** | Monitoring | Phase 2 |
+| **4** | Monitoring | Phase 2 | ✅ |
 | **5** | Final Documentation (revision + handoff) | Phases 1–4 |
 
 ---
@@ -285,9 +288,9 @@ cada uma com seu marcador e requisitos de infraestrutura.
 | Marcador | Categoria | O que valida | Requer infraestrutura? | Fase |
 |----------|-----------|-------------|----------------------|------|
 | `docs` | Documentação | Estrutura de arquivos obrigatórios, seções de documentos vivos, footer de versão | Não — roda com `pip install pytest` | 1 |
-| `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example` | Não — apenas PyYAML | 1 |
+| `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example`; Grafana datasource provisioning | Não — apenas PyYAML | 1 |
 | `integration` | Integração | `render_config.py`: substituição de env vars, validação YAML, dry-run, caminhos de erro; consistência do Compose (build source, pinning, env vars) | Componente unitário: apenas pytest; full suite: Docker + GPU | 2 |
-| `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
+| `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente; apenas `:4000` externa; `:9090` não publicada; `:3000` bound a localhost), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
 
 ### Como executar
 
@@ -329,7 +332,8 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestDockerCompose` | `docker-compose.yml` | Serviços `ray-head` e `litellm` presentes; `ipc: host` e `shm_size` em ray-head |
 | `TestLiteLLMConfig` | `config.yaml` | `model_list` e `general_settings` presentes; master_key declarado |
 | `TestClusterYaml` | `cluster.yaml` | `cluster_name`, `provider`, `available_node_types`; head_node é CPU-only; dashboard bound a 127.0.0.1; imagem Docker pinada; gpu_worker min_workers=0; file_mounts mapeia rendered_config |
-| `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000` |
+| `TestPrometheusConfig` | `prometheus.yml` | `global` e `scrape_configs`; targets apontam para `ray-head:8080` e `litellm:4000`; scrape_interval=15s; sem rule_files (alertas no Grafana) |
+| `TestGrafanaDatasourceConfig` | `grafana/datasources/datasource.yml` | datasource Prometheus configurado como default; url=http://prometheus:9090; access=proxy |
 | `TestEnvExample` | `.env.example` | Declara `HF_TOKEN`, `LITELLM_MASTER_KEY`, `MODEL_ID`, `MODEL_SOURCE` |
 
 #### `test_integration.py` (— integration)
@@ -361,6 +365,8 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestClusterSecurity.test_cluster_dashboard_bound_localhost` | cluster.yaml contém `--dashboard-host=127.0.0.1`
 | `TestClusterSecurity.test_cluster_image_pinned` | cluster.yaml não usa imagem `:latest`
 | `TestClusterSecurity.test_cluster_head_node_cpu_only` | cluster.yaml head node é CPU-only (§7.3)
+| `TestMonitoringPortIsolation.test_prometheus_port_not_published` | Porta 9090 (Prometheus) não está em `ports:` no Compose
+| `TestMonitoringPortIsolation.test_grafana_port_bound_localhost` | Porta 3000 (Grafana) bound a 127.0.0.1
 
 ### Política de Skipping
 

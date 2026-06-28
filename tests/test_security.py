@@ -32,7 +32,12 @@ class TestPortIsolation:
     """
 
     def test_only_4000_published(self, repo_root: Path) -> None:
-        """docker-compose.yml lists only port 4000 in ports: sections."""
+        """Only port 4000 is accessible externally.
+
+        Port 4000 is the sole externally published port. Services bound to
+        127.0.0.1 (localhost only, e.g. Grafana on 3000) are permitted.
+        All other ports (8000, 8265, 10001, 9090) must never appear.
+        """
         path = repo_root / "docker-compose.yml"
         if not path.exists():
             pytest.skip("docker-compose.yml not created yet")
@@ -42,14 +47,19 @@ class TestPortIsolation:
             ports = svc.get("ports", [])
             if isinstance(ports, list):
                 all_ports.extend(p for p in ports if isinstance(p, str))
-        for p in all_ports:
-            # "4000:4000" is allowed; "8000:8000", "8080:8080", "8265:8265" are not
-            host_port = p.split(":")[0] if ":" in p else p
-            assert host_port == "4000", (
-                f"Port {host_port} is exposed in docker-compose.yml — "
-                f"only port 4000 should be published (§9.1)"
-            )
         assert len(all_ports) > 0, "No ports published at all — check service config"
+        for p in all_ports:
+            # Parse host:container format
+            parts = p.split(":")
+            host_part = parts[0]
+            # 127.0.0.1:3000:3000 — localhost-only, permitted
+            if host_part == "127.0.0.1":
+                continue
+            # "4000:4000" — the single external port, permitted
+            assert host_part == "4000", (
+                f"Port {host_part} is exposed in docker-compose.yml — "
+                f"only port 4000 should be publicly accessible (§9.1)"
+            )
 
     def test_ray_ingress_not_published(self, repo_root: Path) -> None:
         """Ray Serve ingress port (8000) is NOT in any ports: section."""
@@ -230,4 +240,53 @@ class TestClusterSecurity:
         assert not instance_type.startswith(("g", "p", "f")), (
             f"Head node InstanceType ({instance_type}) appears to have a GPU; "
             f"head node should be CPU-only per §7.3"
+        )
+
+
+# ── Phase 4: Monitoring Port Isolation ──────────────────────────────────────
+
+
+@pytest.mark.security
+class TestMonitoringPortIsolation:
+    """Monitoring ports follow the same isolation rules as core services (§9.3).
+
+    Prometheus (9090) stays on the internal Compose network — never published.
+    Grafana (3000) is accessible only from localhost via 127.0.0.1 binding.
+    """
+
+    COMPOSE_PATH = "docker-compose.yml"
+
+    def test_prometheus_port_not_published(self, repo_root: Path) -> None:
+        """Port 9090 (Prometheus) must NOT appear in any ports: section."""
+        path = repo_root / self.COMPOSE_PATH
+        if not path.exists():
+            pytest.skip("docker-compose.yml not created yet")
+        compose = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for svc_name, svc in compose.get("services", {}).items():
+            ports = svc.get("ports", [])
+            for port_mapping in ports:
+                mapping = str(port_mapping)
+                # Match port 9090 in any position (host:container, :9090, 9090:...)
+                assert "9090" not in mapping.split(":"), (
+                    f"Service '{svc_name}' exposes port 9090 (Prometheus) in "
+                    f"ports: — Prometheus must stay on the internal Compose "
+                    f"network per §9.3"
+                )
+
+    def test_grafana_port_bound_localhost(self, repo_root: Path) -> None:
+        """Port 3000 (Grafana) must be bound to 127.0.0.1."""
+        path = repo_root / self.COMPOSE_PATH
+        if not path.exists():
+            pytest.skip("docker-compose.yml not created yet")
+        compose = yaml.safe_load(path.read_text(encoding="utf-8"))
+        grafana_ports = compose.get("services", {}).get("grafana", {}).get("ports", [])
+        found_localhost = False
+        for port_mapping in grafana_ports:
+            mapping = str(port_mapping)
+            if "127.0.0.1" in mapping and "3000" in mapping:
+                found_localhost = True
+                break
+        assert found_localhost, (
+            "Grafana port 3000 must be bound to 127.0.0.1 (localhost only) — "
+            f"got: {grafana_ports}"
         )

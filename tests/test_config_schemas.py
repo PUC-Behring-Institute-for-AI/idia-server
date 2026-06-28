@@ -304,6 +304,113 @@ class TestPrometheusConfig:
         assert isinstance(scrape_configs, list)
         assert len(scrape_configs) > 0
 
+    # ── Phase 4 extended tests ────────────────────────────────────────────
+
+    def test_scrape_interval_15s(self, config: dict | None) -> None:
+        """Global scrape interval matches the architecture default."""
+        if config is None:
+            pytest.skip("prometheus.yml not created yet (Phase 4)")
+        interval = config.get("global", {}).get("scrape_interval")
+        assert interval == "15s", (
+            f"Expected scrape_interval=15s, got {interval!r} (§10.2)"
+        )
+
+    def test_targets_match_architecture(self, config: dict | None) -> None:
+        """Scrape targets must include ray-head:8080 and litellm:4000."""
+        if config is None:
+            pytest.skip("prometheus.yml not created yet (Phase 4)")
+        jobs = config.get("scrape_configs", [])
+        found_targets: set[str] = set()
+        for job in jobs:
+            for group in job.get("static_configs", []):
+                for target in group.get("targets", []):
+                    found_targets.add(target)
+        for expected in EXPECTED_TARGETS:
+            assert expected in found_targets, (
+                f"Expected scrape target {expected!r} not found in "
+                f"scrape_configs — got {sorted(found_targets)}"
+            )
+
+    def test_no_alerting_rules(self, config: dict | None) -> None:
+        """Alerting rules are delegated to Grafana, not Prometheus."""
+        if config is None:
+            pytest.skip("prometheus.yml not created yet (Phase 4)")
+        rule_files = config.get("rule_files", None)
+        assert rule_files is None or rule_files == [], (
+            "Prometheus-level alerting rules should not be configured — "
+            "alerts are delegated to Grafana (§10.3)"
+        )
+
+
+# ── grafana/datasources/datasource.yml (§10.2) ─────────────────────────────
+
+GRAFANA_DATASOURCE_KEY = "datasources"
+
+
+@pytest.mark.config
+class TestGrafanaDatasourceConfig:
+    """grafana/datasources/datasource.yml — Prometheus datasource provisioning."""
+
+    PATH = "grafana/datasources/datasource.yml"
+
+    @pytest.fixture
+    def datasource(self, repo_root: Path) -> dict | None:
+        path = repo_root / self.PATH
+        if not path.exists():
+            pytest.skip("grafana/datasources not created yet (Phase 4)")
+        with open(path, encoding="utf-8") as f:
+            parsed = yaml.safe_load(f)
+        return parsed
+
+    def test_datasource_file_exists(self, repo_root: Path) -> None:
+        path = repo_root / self.PATH
+        assert path.exists(), (
+            f"{self.PATH} must exist for Grafana datasource provisioning"
+        )
+
+    def test_has_datasources_key(self, datasource: dict | None) -> None:
+        if datasource is None:
+            pytest.skip("grafana/datasources not created yet")
+        assert GRAFANA_DATASOURCE_KEY in datasource, (
+            f"Missing key: {GRAFANA_DATASOURCE_KEY}"
+        )
+
+    def test_datasource_url(self, datasource: dict | None) -> None:
+        """Datasource URL must point to the Prometheus service."""
+        if datasource is None:
+            pytest.skip("grafana/datasources not created yet")
+        ds_list = datasource.get(GRAFANA_DATASOURCE_KEY, [])
+        assert len(ds_list) >= 1, "At least one datasource must be configured"
+        url = ds_list[0].get("url", "")
+        assert url == "http://prometheus:9090", (
+            f"Expected datasource url=http://prometheus:9090, got {url!r}"
+        )
+
+    def test_datasource_is_default(self, datasource: dict | None) -> None:
+        if datasource is None:
+            pytest.skip("grafana/datasources not created yet")
+        ds_list = datasource.get(GRAFANA_DATASOURCE_KEY, [])
+        assert ds_list[0].get("isDefault") is True, (
+            "Datasource must be configured as default"
+        )
+
+    def test_datasource_access_proxy(self, datasource: dict | None) -> None:
+        if datasource is None:
+            pytest.skip("grafana/datasources not created yet")
+        ds_list = datasource.get(GRAFANA_DATASOURCE_KEY, [])
+        assert ds_list[0].get("access") == "proxy", (
+            "Datasource access mode should be 'proxy' — Grafana proxies "
+            "requests to Prometheus on the internal network"
+        )
+
+    def test_datasource_type_prometheus(self, datasource: dict | None) -> None:
+        if datasource is None:
+            pytest.skip("grafana/datasources not created yet")
+        ds_list = datasource.get(GRAFANA_DATASOURCE_KEY, [])
+        assert ds_list[0].get("type") == "prometheus", (
+            "Datasource type must be 'prometheus'"
+        )
+
 
 # ── .env.example ────────────────────────────────────────────────────────
 

@@ -1,11 +1,16 @@
 # IDIA Server — Docker Compose orchestration
 #
-# Two services: ray-head (Ray Serve LLM + vLLM) and litellm (gateway).
-# Port 4000 is the ONLY port exposed to the host. Ray ingress (8000),
-# dashboard (8265), and client port (10001) stay on the internal Compose
-# network — they are NEVER published.
+# Three service groups:
+#   1. ray-head     (Ray Serve LLM + vLLM inference)
+#   2. litellm      (API gateway — auth, routing, spend tracking)
+#   3. prometheus + grafana (monitoring — see   for details)
 #
-# See docs/ARCHITECTURE.md §5.4 for architecture rationale and §9 for
+# Port 4000 is the ONLY port exposed to external network access. Port 3000
+# (Grafana) is accessible only from localhost (127.0.0.1). Ray ingress (8000),
+# dashboard (8265), client port (10001), and Prometheus (9090) stay on the
+# internal Compose network — they are NEVER published.
+#
+# See docs/ARCHITECTURE.md 5.4 for architecture rationale and 9 for
 # the security constraints that justify this port isolation.
 
 services:
@@ -46,3 +51,42 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
     command: ["--config=/app/config.yaml"]
     restart: unless-stopped
+
+  # ── Monitoring ────────────────────────────────────────────────────────
+  # Prometheus scrapes metrics from the internal Compose network.
+  # Port 9090 is NOT published — access the UI via docker compose exec.
+  # See docs/ARCHITECTURE.md   for details.
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    deploy:
+      resources:
+        limits:
+          memory: "1g"               # prevent unbounded /prometheus growth
+    restart: unless-stopped
+    # NO ports: published — 9090 is internal. Grafana queries it via the
+    # internal Compose network. For CLI access: docker compose exec prometheus sh
+
+  # Grafana provides dashboards and alerting UI.
+  # Bound to 127.0.0.1:3000 — accessible only from the host machine.
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    depends_on:
+      - prometheus
+    ports:
+      - "127.0.0.1:3000:3000"       # localhost only — no external access
+    volumes:
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  prometheus_data:
+    name: idia_prometheus_data
+  grafana_data:
+    name: idia_grafana_data
