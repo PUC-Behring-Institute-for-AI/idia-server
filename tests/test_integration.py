@@ -143,7 +143,13 @@ class TestRenderConfig:
         )
         parsed = yaml.safe_load(rendered)
         engine = parsed["applications"][0]["args"]["llm_configs"][0]["engine_kwargs"]
+        assert isinstance(engine["gpu_memory_utilization"], float), (
+            f"Expected float, got {type(engine['gpu_memory_utilization'])}"
+        )
         assert engine["gpu_memory_utilization"] == 0.9
+        assert isinstance(engine["max_model_len"], int), (
+            f"Expected int, got {type(engine['max_model_len'])}"
+        )
         assert engine["max_model_len"] == 4096
 
     def test_render_validates_full_template(self, serve_config_yaml: Path) -> None:
@@ -225,6 +231,104 @@ class TestRenderConfigErrors:
         # Inject an unclosed mapping after substitution
         with pytest.raises(SystemExit):
             render("key: ${UNKNOWN_VAR}\n  bad_indent", overrides={})
+
+
+@pytest.mark.integration
+class TestRenderSchemaErrors:
+    """Schema and input validation in render_config.py."""
+
+    def test_gpu_util_above_range_fails(self, scripts_dir: Path) -> None:
+        """GPU_MEMORY_UTILIZATION > 1.0 raises SystemExit."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODEL_ID": "test-model",
+            "MODEL_SOURCE": "test-org/test-model",
+            "GPU_MEMORY_UTILIZATION": "1.5",
+        }
+        with pytest.raises(SystemExit):
+            render("model_id: ${MODEL_ID}", overrides=overrides)
+
+    def test_gpu_util_negative_fails(self, scripts_dir: Path) -> None:
+        """GPU_MEMORY_UTILIZATION <= 0 raises SystemExit."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODEL_ID": "test-model",
+            "MODEL_SOURCE": "test-org/test-model",
+            "GPU_MEMORY_UTILIZATION": "-0.5",
+        }
+        with pytest.raises(SystemExit):
+            render("model_id: ${MODEL_ID}", overrides=overrides)
+
+    def test_max_model_len_non_numeric_fails(self, scripts_dir: Path) -> None:
+        """MAX_MODEL_LEN=abc raises SystemExit."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODEL_ID": "test-model",
+            "MODEL_SOURCE": "test-org/test-model",
+            "MAX_MODEL_LEN": "abc",
+        }
+        with pytest.raises(SystemExit):
+            render("model_id: ${MODEL_ID}", overrides=overrides)
+
+    def test_model_id_with_yaml_special_chars_escaped(self, scripts_dir: Path) -> None:
+        """MODEL_ID with YAML special chars is escaped, not injected."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODEL_ID": 'test: {evil: true}',
+            "MODEL_SOURCE": "test-org/test-model",
+        }
+        rendered = render(
+            yaml.safe_dump({
+                "proxy_location": "EveryNode",
+                "http_options": {"host": "0.0.0.0", "port": 8000},
+                "applications": [{
+                    "name": "llms",
+                    "import_path": "ray.serve.llm:build_openai_app",
+                    "route_prefix": "/",
+                    "args": {
+                        "llm_configs": [{
+                            "model_loading_config": {
+                                "model_id": "${MODEL_ID}",
+                                "model_source": "${MODEL_SOURCE}",
+                            },
+                            "deployment_config": {
+                                "autoscaling_config": {
+                                    "min_replicas": 1,
+                                    "max_replicas": 1,
+                                    "target_ongoing_requests": 64,
+                                },
+                            },
+                        }],
+                    },
+                }],
+            }),
+            overrides=overrides,
+        )
+        parsed = yaml.safe_load(rendered)
+        # The entire value should be kept as a single string
+        mlc = parsed["applications"][0]["args"]["llm_configs"][0]["model_loading_config"]
+        assert mlc["model_id"] == 'test: {evil: true}'
+        assert mlc["model_source"] == "test-org/test-model"
 
 
 # ── Compose dependency consistency ──────────────────────────────────────────

@@ -13,9 +13,10 @@ model_list:
     litellm_params:
       model: openai/llama-3.1-8b
       api_base: http://ray-head:8000/v1
-      api_key: placeholder
-    # ray-head resolves via Docker Compose's internal DNS. Port 8000 is the
-    # Ray Serve ingress — only reachable from within the Compose network.
+      api_key: "no-auth-internal"
+    # Ray Serve ingress (:8000) is internal-only — no API key required.
+    # This value is informational; see docs/ARCHITECTURE.md §9.3 for
+    # the security model.
 
 general_settings:
-  master_key: ${LITELLM_MASTER_KEY:sk-admin}
+  master_key: ${LITELLM_MASTER_KEY}  # No fallback — required env var. See .env.example.

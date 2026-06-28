@@ -9,7 +9,7 @@
 
 FROM rayproject/ray-ml:2.55.0-py311-gpu
 
-RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" vllm
+RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" "vllm==0.5.4"
 
 WORKDIR /app
 

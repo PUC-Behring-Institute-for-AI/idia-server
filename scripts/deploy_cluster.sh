@@ -64,6 +64,9 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
+# ── Placeholder patterns rejected as unsafe ──────────────────────────────────
+PLACEHOLDER_PATTERNS="^(placeholder|change-me|hf_xxx|your-.*|TODO|FIXME)$"
+
 # ── Load .env ───────────────────────────────────────────────────────────────
 
 # Using set -a to auto-export all variables sourced from .env
@@ -74,15 +77,21 @@ set +a
 
 REQUIRED_VARS=("HF_TOKEN" "LITELLM_MASTER_KEY" "MODEL_ID" "MODEL_SOURCE")
 for var in "${REQUIRED_VARS[@]}"; do
-    if [ -z "${!var:-}" ]; then
+    val="${!var:-}"
+    if [ -z "$val" ]; then
         echo "ERROR: Required variable '$var' is not set in .env"
+        exit 1
+    fi
+    if echo "$val" | grep -qiE "$PLACEHOLDER_PATTERNS"; then
+        echo "ERROR: '$var' appears to be a placeholder value: '$val'"
+        echo "       Edit .env and replace it with a real value."
         exit 1
     fi
 done
 
 echo "[OK] .env loaded successfully"
 echo "     MODEL_ID=$MODEL_ID"
-echo "     MODEL_SOURCE=$MODEL_SOURCE"
+echo "     MODEL_SOURCE=<configurado via .env>"
 
 # ── Pre-render config ──────────────────────────────────────────────────────
 
@@ -126,9 +135,6 @@ echo "  ✓ Cluster launched"
 echo ""
 echo "[3/4] Deploying LLM app..."
 
-# Wait briefly for Ray to be ready after ray up
-sleep 5
-
 ray exec "$CLUSTER_FILE" "serve run /app/rendered_config.yaml"
 
 echo "  ✓ LLM app deployed"
@@ -149,7 +155,7 @@ echo "API endpoint (via head node public IP):"
 echo "  curl -X POST http://<head-public-ip>:4000/chat/completions \\"
 echo "    -H \"Authorization: Bearer \$LITELLM_MASTER_KEY\" \\"
 echo "    -H \"Content-Type: application/json\" \\"
-echo '    -d '\''{"model":"'"$MODEL_ID"'","messages":[{"role":"user","content":"ping"}]}'\'''
+printf '    -d '"'"'{"model":"%s","messages":[{"role":"user","content":"ping"}]}'\''\n' "$MODEL_ID"
 echo ""
 echo "To scale down to zero workers:"
 echo "  ray down -y $CLUSTER_FILE"

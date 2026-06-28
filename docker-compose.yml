@@ -19,18 +19,27 @@ services:
       context: .
       dockerfile: Dockerfile.ray
     ipc: host
-    shm_size: "4gb"
+    shm_size: "${RAY_SHM_SIZE:-4gb}"
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - idia_hf_cache:/root/.cache/huggingface
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
       - MODEL_ID=${MODEL_ID}
       - MODEL_SOURCE=${MODEL_SOURCE}
       - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     deploy:
       resources:
+        limits:
+          memory: "${RAY_MEMORY_LIMIT:-16g}"
         reservations:
+          memory: "${RAY_MEMORY_RESERVATION:-8g}"
           devices:
             - driver: nvidia
               count: all
@@ -42,13 +51,20 @@ services:
   litellm:
     image: docker.litellm.ai/berriai/litellm:v1.85.0
     depends_on:
-      - ray-head
+      ray-head:
+        condition: service_healthy
     ports:
       - "4000:4000"                  # Only port exposed to host
     volumes:
       - ./config.yaml:/app/config.yaml
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     command: ["--config=/app/config.yaml"]
     restart: unless-stopped
 
@@ -59,6 +75,10 @@ services:
 
   prometheus:
     image: prom/prometheus:v2.55.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+      - '--storage.tsdb.retention.size=5GB'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -83,6 +103,9 @@ services:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
       - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     restart: unless-stopped
 
 volumes:
@@ -90,3 +113,5 @@ volumes:
     name: idia_prometheus_data
   grafana_data:
     name: idia_grafana_data
+  idia_hf_cache:
+    name: idia_hf_cache

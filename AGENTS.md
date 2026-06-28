@@ -232,6 +232,76 @@ abordagens estabelecidas — nesse caso, documentar por que.
 
 ---
 
+## Code Quality Axioms (AXIOM — NON-OVERRIDABLE)
+
+Estas regras existem porque a auditoria de 2026-06-28 revelou padrões
+de falha recorrentes: validação de entrada ausente, dependências não
+declaradas, I/O sem diagnóstico, e cobertura de testes insuficiente
+para casos de erro. Elas se aplicam a todo código e toda fase.
+
+### 4. Input Validation Rule — Toda env var com tipo restrito deve ser validada
+
+Toda variável de ambiente com tipo numérico (int, float) ou range deve
+ser validada antes do uso. A validação deve:
+- Rejeitar valores que não podem ser convertidos para o tipo esperado.
+- Rejeitar valores fora do range documentado.
+- Emitir mensagem clara com o valor recebido e o range esperado.
+- Usar `sys.exit(1)` para falhas de validação no entrypoint.
+
+**Aplica-se a:** `GPU_MEMORY_UTILIZATION` (range 0-1), `MAX_MODEL_LEN`
+(inteiro positivo).
+
+### 5. Dependency Declaration Rule — Todo import Python deve ter entry em pyproject.toml
+
+Nenhuma dependência pode ser importada sem estar declarada em
+`[project.dependencies]` no `pyproject.toml`, com version bounds
+explícitos (`>=` para mínimo, `<` para máximo).
+
+**Veda:** confiar em dependências transitivas (ex: Ray inclui PyYAML).
+Se o código faz `import yaml`, `pyyaml` deve estar em `pyproject.toml`.
+
+### 6. Error Handling Rule — Toda operação de I/O deve ter diagnóstico explícito
+
+Toda operação de arquivo, rede, ou subprocesso deve ser envolvida em
+`try/except` com mensagens que:
+- Identifiquem o arquivo/recurso específico que falhou.
+- Expliquem a causa provável (permissão, encoding, não encontrado).
+- Sugiram uma ação corretiva para o operador.
+
+**Exceção:** operações em funções puras de teste (que não fazem I/O).
+
+### 7. Test Coverage Rule — Caminhos de erro devem ser testados
+
+Para toda função com validação de entrada, os casos de erro devem ser
+testados ao lado dos caminhos felizes. A cobertura mínima inclui:
+- Valores fora do range esperado.
+- Valores com tipo incorreto.
+- Caracteres especiais que podem subverter o formato de saída.
+- Arquivos ausentes ou inacessíveis.
+
+### 8. Secret Hygiene Rule — Env vars com valores reais nunca são logadas
+
+Nenhuma variável de ambiente com valor real deve ser impressa em
+stdout/stderr, exceto em modo `--debug` ou `--dry-run` explicitamente
+ativado. Identificadores não-sensíveis (MODEL_ID, nomes de modelo)
+podem ser logados. Senhas, tokens, chaves de API nunca devem ser
+logados — nem mesmo de forma ofuscada.
+
+### 9. Severity Calibration Rule — Mitigações existentes devem ser avaliadas antes da severidade
+
+Ao classificar a severidade de uma vulnerabilidade:
+1. Mapear a superfície de ataque real (quem pode explorar? por qual vetor?).
+2. Identificar mitigações existentes (firewall, binding local, rede interna).
+3. Atribuir severidade APÓS avaliar mitigações — não antes.
+
+**Guia:**
+- CRÍTICO: exploração remota sem autenticação, sem mitigações.
+- ALTO: exploração remota com mitigações parciais.
+- MÉDIO: exploração que requer acesso prévio (rede interna, SSH, física).
+- BAIXO: melhoria defensiva sem risco imediato.
+
+---
+
 ## Security Constraints (from ARCHITECTURE 
 
 Derivadas da arquitetura. **Não negociáveis.**
@@ -356,6 +426,10 @@ Cada classe de teste valida a estrutura de um arquivo de configuração contra a
 | `TestRenderConfig.test_dry_run_flag` | `--dry-run` produz YAML válido sem executar serve |
 | `TestRenderConfigErrors.test_missing_required_var_fails` | Exit 1 com mensagem se MODEL_ID ausente |
 | `TestRenderConfigErrors.test_bad_yaml_template_fails` | Exit 1 se template inválido após substituição |
+| `TestRenderSchemaErrors.test_gpu_util_above_range_fails` | GPU_MEMORY_UTILIZATION=1.5 → exit |
+| `TestRenderSchemaErrors.test_gpu_util_negative_fails` | GPU_MEMORY_UTILIZATION=-0.5 → exit |
+| `TestRenderSchemaErrors.test_max_model_len_non_numeric_fails` | MAX_MODEL_LEN=abc → exit |
+| `TestRenderSchemaErrors.test_model_id_with_yaml_special_chars_escaped` | MODEL_ID com `:{}` é escapado, não injetado |
 | `TestComposeConsistency.test_ray_head_builds_locally` | ray-head usa build local (Dockerfile.ray) |
 | `TestComposeConsistency.test_litellm_uses_pinned_image` | litellm usa tag semver, não :latest |
 | `TestComposeConsistency.test_ray_head_passes_vars_to_entrypoint` | ray-head passa MODEL_ID, MODEL_SOURCE, MAX_MODEL_LEN, GPU_MEMORY_UTILIZATION |

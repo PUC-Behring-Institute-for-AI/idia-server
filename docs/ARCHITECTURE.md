@@ -214,13 +214,13 @@ inference-server/
 
 ```dockerfile
 FROM rayproject/ray-ml:2.55.0-py311-gpu
-RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" vllm
+RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" "vllm==0.5.4"
 WORKDIR /app
 COPY serve_config.yaml scripts/render_config.py ./
 CMD ["python3", "/app/render_config.py"]
 ```
 
-The `ray-ml` image ships Ray's ML dependencies; the explicit `ray[serve,llm]` install pulls Ray Serve LLM's additional requirements. Pin the Ray version. `2.55.0` installs vLLM `0.18.0` as its bundled engine; verify compatibility before bumping either independently.
+The `ray-ml` image ships Ray's ML dependencies; the explicit `ray[serve,llm]` install pulls Ray Serve LLM's additional requirements. Both Ray (`2.55.0`) and vLLM (`0.5.4`) are pinned to ensure deterministic builds. `2.55.0` installs vLLM `0.18.0` as its bundled engine; verify compatibility before bumping either independently.
 
 The CMD delegates to a Python entrypoint (`render_config.py`, see §5.6) that reads `serve_config.yaml`, substitutes `${VAR}` placeholders from environment variables, writes the rendered YAML to a temp file, and then `exec`s `serve run` — replacing the Python process with Ray Serve without a fork. This substitution is necessary because `serve_config.yaml` is consumed by Ray Serve directly and cannot access shell env vars natively.
 
@@ -265,37 +265,61 @@ services:
       context: .
       dockerfile: Dockerfile.ray
     ipc: host
-    shm_size: "4gb"
+    shm_size: "${RAY_SHM_SIZE:-4gb}"
     volumes:
-      - ~/.cache/huggingface:/root/.cache/huggingface
+      - idia_hf_cache:/root/.cache/huggingface
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      - MODEL_ID=${MODEL_ID}
+      - MODEL_SOURCE=${MODEL_SOURCE}
+      - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
+      - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     deploy:
       resources:
+        limits:
+          memory: "${RAY_MEMORY_LIMIT:-16g}"
         reservations:
+          memory: "${RAY_MEMORY_RESERVATION:-8g}"
           devices:
             - driver: nvidia
               count: all              # all GPUs on the host — Ray distributes replicas across them itself
               capabilities: [gpu]
     restart: unless-stopped
-    # Deliberately no "ports:" mapping — dashboard (8265) and ingress (8000)
+    # NO "ports:" mapping — dashboard (8265), ingress (8000) and client (10001)
     # stay on the internal Compose network only. See §9.3.
 
   litellm:
     image: docker.litellm.ai/berriai/litellm:v1.85.0
     depends_on:
-      - ray-head
+      ray-head:
+        condition: service_healthy
     ports:
       - "4000:4000"                  # the only port exposed to the host
     volumes:
       - ./config.yaml:/app/config.yaml
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     command: ["--config=/app/config.yaml"]
     restart: unless-stopped
 
   prometheus:
     image: prom/prometheus:v2.55.0
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+      - '--storage.tsdb.retention.size=5GB'
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -317,6 +341,9 @@ services:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources
       - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
       - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     restart: unless-stopped
 
 volumes:
@@ -324,7 +351,27 @@ volumes:
     name: idia_prometheus_data
   grafana_data:
     name: idia_grafana_data
+  idia_hf_cache:
+    name: idia_hf_cache
 ```
+
+Changes from Phase 2:
+- **HF cache volume:** bind mount → named volume `idia_hf_cache` (SEC-03). Read-write
+  inside the container but isolated from the host's `~/.cache/huggingface`,
+  preventing container compromise from exfiltrating host HF tokens.
+- **Health checks:** ray-head probes `/metrics` on port 8080; litellm probes
+  `/health` on port 4000 (SEC-08). LiteLLM uses `depends_on.condition:
+  service_healthy` so it starts only after ray-head is ready.
+- **Memory limits:** ray-head limited to 16 GB with an 8 GB reservation
+  (SEC-11). Both configurable via `RAY_MEMORY_LIMIT` and
+  `RAY_MEMORY_RESERVATION`.
+- **Shared memory:** `shm_size` configurable via `RAY_SHM_SIZE` env var
+  (default 4 GB) for large-model compatibility (INFRA-02).
+- **Grafana admin password:** read from `GRAFANA_ADMIN_PASSWORD` env var
+  (SEC-07). Without this, Grafana uses `admin:admin` as default credentials.
+- **Prometheus retention:** `--storage.tsdb.retention.time=15d` and
+  `--storage.tsdb.retention.size=5GB` prevent the `/prometheus` volume from
+  growing unbounded (INFRA-01).
 
 ### 5.5 `.env`
 
@@ -338,6 +385,7 @@ MODEL_ID=llama-3.1-8b
 MODEL_SOURCE=meta-llama/Llama-3.1-8B-Instruct
 MAX_MODEL_LEN=8192          # optional — see defaults below
 GPU_MEMORY_UTILIZATION=0.9  # optional — see defaults below
+GRAFANA_ADMIN_PASSWORD=      # required if Grafana is enabled (see §5.4)
 ```
 
 **Variable reference:**
@@ -350,6 +398,14 @@ GPU_MEMORY_UTILIZATION=0.9  # optional — see defaults below
 | `MODEL_SOURCE` | Yes | str | — | `serve_config.yaml` (Ray) |
 | `MAX_MODEL_LEN` | No | int | 8192 | `serve_config.yaml` (vLLM engine_kwargs) |
 | `GPU_MEMORY_UTILIZATION` | No | float | 0.9 | `serve_config.yaml` (vLLM engine_kwargs) |
+| `GRAFANA_ADMIN_PASSWORD` | Yes* | str | — | `docker-compose.yml` (Grafana) |
+| `RAY_SHM_SIZE` | No | str | 4gb | `docker-compose.yml` (ray-head shm_size) |
+| `RAY_MEMORY_LIMIT` | No | str | 16g | `docker-compose.yml` (ray-head deploy.limits.memory) |
+| `RAY_MEMORY_RESERVATION` | No | str | 8g | `docker-compose.yml` (ray-head deploy.reservations.memory) |
+
+\* `GRAFANA_ADMIN_PASSWORD` is required when the Grafana service is included
+in the stack; without it Grafana falls back to its built-in `admin:admin`
+credentials, which is a security risk (SEC-07).
 
 The template YAML (`serve_config.yaml`) uses `${VAR}` placeholders; the
 Python entrypoint (§5.6) substitutes them at container startup. LiteLLM
@@ -372,19 +428,34 @@ on `serve_config.yaml` before delegating to Ray Serve.
 **Behavior:**
 
 1. Locate `serve_config.yaml` (searches script directory then `/app`).
-2. Read template with `${VAR}` placeholders.
+2. Read template with `${VAR}` placeholders (`_read_file` with explicit
+   `try/except` for file-not-found, permission, and encoding errors).
 3. Collect environment: required vars (`MODEL_ID`, `MODEL_SOURCE`) must be set;
-   optional vars (`MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`) get defaults.
-4. Substitute placeholders using regex `\$\{(\w+)\}`.
-5. Validate rendered YAML: parse with `yaml.safe_load`, verify structural
+   optional vars (`MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`) get defaults via
+   `_apply_defaults()`.
+4. Validate values against schema constraints:
+   - `GPU_MEMORY_UTILIZATION` must parse as float in range (0, 1].
+   - `MAX_MODEL_LEN` must be a positive integer string.
+   Exit code 1 with clear diagnostic on failure.
+5. Substitute placeholders using regex `\$\{(\w+)\}`. Values containing YAML
+   special characters (`:`, `{`, `}`, `\n`, `#`) are automatically escaped
+   as quoted YAML scalars via `_escape_yaml_value()` to prevent YAML injection
+   (SEC-06).
+6. Validate rendered YAML: parse with `yaml.safe_load`, verify structural
    keys (`applications`, `llm_configs`, `model_loading_config` with non-empty
    `model_id` and `model_source`).
-6. Write rendered YAML to a temp file.
-7. `exec serve run` on the temp file (replaces the Python process).
+7. Write rendered YAML to a deterministic path (`/tmp/idia_serve_config.yaml`,
+   overwritten on each run) — replaces the previous `NamedTemporaryFile`
+   approach that leaked files on `os.execlp` (BUG-03).
+8. `exec serve run` on the rendered file (replaces the Python process).
 
 **Testing hook:** the module exposes a `render()` pure function and a
 `--dry-run` CLI flag that prints the rendered YAML to stdout without
 launching Ray Serve — used by `tests/test_integration.py`.
+
+**Dependency declaration:** `import yaml` requires `pyyaml>=6.0,<7.0` declared
+in `pyproject.toml` (INFRA-03). Previously relied on Ray's transitive
+inclusion, which left the version unspecified.
 
 ---
 
@@ -769,6 +840,11 @@ Key properties:
 - Scrape interval 15s — appropriate for inference servers; engine-level
   metrics (TTFT, cache usage) change at request granularity, not
   sub-second.
+- **Data retention:** flags `--storage.tsdb.retention.time=15d` and
+  `--storage.tsdb.retention.size=5GB` prevent the `/prometheus` volume from
+  growing unbounded (INFRA-01). Configured via the `command` array in
+  `docker-compose.yml` rather than the config file, keeping `prometheus.yml`
+  focused on scrape configuration.
 
 **Grafana** with automatic provisioning:
 
@@ -1149,6 +1225,7 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 | 2026-06-28 | Phase 2: Added entrypoint script (render_config.py), expanded .env vars with table, updated Dockerfile CMD, serve_config placeholders, LiteLLM config, integration/security tests, new §5.6 Entrypoint Script | Build Core implementation |
 | 2026-06-28 | Phase 3: Updated §7.3 (pre-render workflow for cluster.yaml — decision record), expanded §7.2 (step-by-step EC2 + Compose guide with security group table), added §7.3 deploy automation script reference, extended test tables in §11 with Phase 3 tests (TestClusterYaml extended, TestClusterSecurity); new Governance & Maintainability Axioms in AGENTS.md (Decision Closure, Architecture Feedback Loop, Traceability Axiom) | AWS Deployment implementation |
 | 2026-06-28 | Phase 5: Updated §16 (added §16.6 ADR.md decision records); created `docs/ADR.md` with 8 ADRs (phases 1-5); updated `LICENSE` (Apache 2.0); added cross-doc consistency tests (TestReadmeDirectoryTree, TestADRValidation); updated §18 footer | Final Documentation — revision + handoff |
+| 2026-06-28 | Audit remediation — 23 fixes: (§5.2 Dockerfile: vLLM pinned 0.5.4); (§5.4 Compose: HF named volume, Grafana password, health checks, memory limits, Prometheus retention, shm override); (§5.6 entrypoint: schema validation, YAML escape, deterministic path, dependency declaration); Config: SEC-01/SEC-04 fixed; Deploy: SEC-02/SEC-10/BUG-04/BUG-05 fixed; AGENTS.md: 6 new Code Quality Axioms; Tests: TestRenderSchemaErrors added + type validation | Audit response (2026-06-28) |
 
 ---
 
@@ -1168,4 +1245,4 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.5 | Last updated: 2026-06-28 | Sections changed: §16.6 (added ADR.md — decision records), §17 (added ADR.md reference), §18 footer updated; LICENSE (Apache 2.0)*
+*Document version: 1.6 | Last updated: 2026-06-28 | Sections changed: §5.2 (vLLM pinning), §5.4 (Compose — HF volume, Grafana password, health checks, memory, retention, shm), §5.5 (expanded env var table), §5.6 (schema validation, YAML escape, deterministic path, dependency declaration), §10.2 (Prometheus retention), §16.7 (audit remediation entry), AGENTS.md Code Quality Axioms (6 new rules)*
