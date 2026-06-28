@@ -52,18 +52,18 @@ idia-server/
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
 │   └── ...                ← futuros: ADR.md, GLOSSARY.md conforme necessário
-└── README.md              ← documentação do repositório (Phase 5)
+└── README.md              ← documentação do repositório (Phase 1 ✓)
 ```
 
 ## Implementation Phases
 
 | Phase | Name | Dependencies |
 |-------|------|-------------|
-| **1** | Foundation + AGENTS.md | — |
+| **1** | Foundation + AGENTS.md + README.md | — |
 | **2** | Build Core | Phase 1 |
 | **3** | AWS Deployment | Phase 2 |
 | **4** | Monitoring | Phase 2 |
-| **5** | Final Documentation | Phases 1–4 |
+| **5** | Final Documentation (revision + handoff) | Phases 1–4 |
 
 ---
 
