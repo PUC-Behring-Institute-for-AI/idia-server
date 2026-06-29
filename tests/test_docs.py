@@ -21,12 +21,20 @@ REQUIRED_DOCS: list[tuple[str, str]] = [
     ("architecture", "docs/ARCHITECTURE.md"),
     ("agents", "AGENTS.md"),
     ("readme", "README.md"),
+    ("deploy", "docs/DEPLOY.md"),
+    ("adr", "docs/ADR.md"),
 ]
 
 LIVING_DOC_SECTIONS: dict[str, list[str]] = {
     "docs/ARCHITECTURE.md": [
         "Document Evolution Contract",
         "Structural Change History",
+    ],
+    "docs/DEPLOY.md": [
+        "Deploy local",
+        "Deploy na AWS",
+        "Gestão de usuários",
+        "Troubleshooting",
     ],
 }
 

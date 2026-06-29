@@ -181,6 +181,10 @@ completo em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 > O IDIA Server usa uma CLI unificada (`./idia`) como ponto de entrada único.
 > Não use `docker compose up` diretamente — a CLI garante que os configs sejam
 > renderizados antes de subir os containers.
+>
+> **Guia detalhado:** [`docs/DEPLOY.md`](docs/DEPLOY.md) — cobre pré-requisitos,
+> passo a passo com saída esperada, multi-model, AWS completo, integração com
+> clientes (Python, LangChain, OpenCode), e troubleshooting.
 
 ### 4.1 Preparação (uma vez)
 
@@ -308,6 +312,7 @@ idia-server/
 │   └── test_contract.py        ← Contratos REST LiteLLM sem GPU (integration)
 ├── docs/
 │   ├── ARCHITECTURE.md         ← Documento vivo (~1200 linhas)
+│   ├── DEPLOY.md               ← Guia de operações completo (local + AWS)
 │   ├── ADR.md                  ← Architecture Decision Records
 │   └── audit_logs/             ← Relatórios de auditoria vetados
 └── README.md                   ← Este arquivo
@@ -683,4 +688,4 @@ instituições de pesquisa brasileiras.
 
 ---
 
-*README version: 2.0 | Last updated: 2026-06-29 | Maintainer: @anaxsouza*
+*README version: 2.1 | Last updated: 2026-06-29 | Maintainer: @anaxsouza*

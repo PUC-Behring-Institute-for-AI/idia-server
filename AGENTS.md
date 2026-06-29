@@ -2,7 +2,7 @@
 # Location: /Users/anaxsouza/Documents/Github/idia-server/AGENTS.md
 # Inherits: ~/.config/opencode/AGENTS.md (global rules)
 # Requires: global >= 2.0
-# Version: 1.2
+# Version: 1.3
 # Last updated: 2026-06-29
 
 ## Project
@@ -67,6 +67,7 @@ idia-server/
 │   └── test_contract.py   ← contratos REST LiteLLM sem GPU (Tier 4 ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
+│   ├── DEPLOY.md          ← guia de operações completo (local + AWS) (Phase 5 ✓)
 │   ├── ADR.md             ← Architecture Decision Records (Phase 5 ✓)
 │   ├── audit_logs/        ← relatórios de auditoria vetados
 │   │   ├── 2026-06-28_audit_vettato.md
@@ -79,11 +80,12 @@ idia-server/
 
 | Phase | Name | Dependencies |
 |-------|------|-------------|
-| **1** | Foundation + AGENTS.md + README.md | — |
+| **1** | Foundation + AGENTS.md + README.md | — | ✅ |
 | **2** | Build Core | Phase 1 | ✅ |
 | **3** | AWS Deployment | Phase 2 | ✅ |
 | **4** | Monitoring | Phase 2 | ✅ |
 | **5** | Final Documentation (revision + handoff) | Phases 1–4 | ✅ |
+| **Post-5** | Operational automation (unified CLI, dual render, DEPLOY.md) | Phase 5 | ✅ |
 
 ---
 
