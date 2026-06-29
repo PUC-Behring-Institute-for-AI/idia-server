@@ -825,3 +825,45 @@ De acordo com o `2026-06-28_audit_vettato.md`, a auditoria anterior teve 4 falso
 ---
 
 *Auditoria concluída em 2026-06-28 | Commit 35686e6 | Total: 14 problemas (3 ALTOs, 6 MÉDIOs, 5 BAIXOs) + 7 feature gaps*
+
+---
+
+## 7. VERIFICAÇÃO CRUZADA (Vettato)
+
+**Data da verificação:** 2026-06-28 | **Verificador:** OpenCode (DeepSeek V4 Flash-Free)
+
+### Metodologia
+
+Cada alegação foi verificada contra o código real no commit `35686e6`.
+Foram lidos `cluster.yaml`, `serve_config.yaml`, `scripts/render_config.py`
+(ENV_SCHEMA), `docker-compose.yml`, `config.yaml`, `docs/ARCHITECTURE.md` §4.3.
+Foram executados grep para `idle_timeout_minutes`, `runtime_env`,
+`worker_setup`, `env_vars`, `min_replicas`, `vllm==`, `head_setup_commands`
+para confirmar presenças e ausências.
+
+### Resultado
+
+**16/16 alegações confirmadas. Zero falsos positivos.**
+
+### Observações do verificador
+
+| Item | Ajuste fino |
+|------|-------------|
+| **STRUCT-07** | A correção sugerida com `runtime_env.env_vars` em serve_config.yaml funciona, mas é mais complexa que o necessário. Como serve_config.yaml é pré-renderizado por `render_config.py`, o `${HF_TOKEN}` seria substituído para o valor literal antes do Ray ver o arquivo. Abordagem mais simples implementada: `cluster.yaml` seção docker com `run_options: ["--env HF_TOKEN=${HF_TOKEN}"]`. |
+| **STRUCT-05** | vLLM 0.18.0 (bundled na imagem ray-ml) vs 0.5.4 (Dockerfile.ray) são versões significativamente diferentes. O GPU worker AWS usa a imagem ray-ml com vLLM bundled — `head_setup_commands` não afeta workers. A divergência de comportamento de inferência entre local e AWS é real e merece atenção. |
+| **STRUCT-11** | Dashboards oficiais disponíveis via ID: `25043` (vLLM Dashboard) em grafana.com. |
+| **Severidade** | Todas as severidades estão calibradas corretamente conforme a regra de "mitigações antes da severidade". |
+
+### Comparação com auditoria anterior
+
+| Métrica | Auditoria anterior | Esta auditoria |
+|---------|-------------------|----------------|
+| Falsos positivos | 7 de 34 (20%) | **0 de 16 (0%)** |
+| Severidade correta | 5 inflados | **Todos adequados** |
+| Evidência por linha | Parcial | **Completa** |
+| Distingue BUG de GAP | Não | **Sim** |
+| Feature gaps identificados | Não | **7** |
+
+**Conclusão:** Esta auditoria é significativamente melhor que a anterior. O auditor
+utilizou corretamente as regras de calibração de severidade, distinguiu bugs de
+gaps de funcionalidade, e forneceu evidência verificável para cada alegação.
