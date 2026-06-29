@@ -37,10 +37,11 @@ import yaml
 
 # (type, default_or_None_if_required)
 ENV_SCHEMA: dict[str, tuple[type, object]] = {
-    "MODEL_ID": (str, None),  # None = required
+    "MODEL_ID": (str, None),  # None = required (single-model mode)
     "MODEL_SOURCE": (str, None),
     "MAX_MODEL_LEN": (int, 8192),
     "GPU_MEMORY_UTILIZATION": (float, 0.9),
+    "MODELS_COUNT": (int, None),  # set >0 for multi-model mode
 }
 
 TEMPLATE_FILENAME = "serve_config.yaml"
@@ -51,6 +52,22 @@ ENV_VAR_RE = re.compile(r"\$\{(\w+)\}")
 
 # Characters in values that would corrupt YAML structure
 YAML_SPECIAL_CHARS = set(":{}\n#")
+
+# Multi-model helper: model config template used for each numbered entry
+MODEL_CONFIG_TEMPLATE = """        - model_loading_config:
+            model_id: {model_id}
+            model_source: {model_source}
+          engine_kwargs:
+            dtype: bfloat16
+            gpu_memory_utilization: {gpu_util}
+            max_model_len: {max_len}
+          deployment_config:
+            autoscaling_config:
+              min_replicas: 0
+              max_replicas: 4
+              target_ongoing_requests: 64"""
+
+LLM_CONFIGS_MARKER = "##LLM_CONFIGS##"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -153,16 +170,41 @@ def _validate_schema_values(env: dict[str, str]) -> None:
 def _collect_env() -> dict[str, str]:
     """Validate and collect env vars, injecting defaults for optionals.
 
+    For multi-model mode (MODELS_COUNT > 0), also collects MODEL_N_ID
+    and MODEL_N_SOURCE for N = 1..MODELS_COUNT.
+
     Returns a flat dict of all vars needed for substitution.
     Exits with code 1 if any required var is missing.
     """
     env = dict(os.environ)
     missing: list[str] = []
 
-    for var, (typ, default) in ENV_SCHEMA.items():
-        if default is None:  # required
-            if var not in env:
-                missing.append(var)
+    # Parse MODELS_COUNT early for multi-model validation
+    models_count = 0
+    mc_str = env.get("MODELS_COUNT", "")
+    if mc_str:
+        try:
+            models_count = int(mc_str)
+        except ValueError:
+            print(
+                f"FATAL: MODELS_COUNT deve ser um inteiro, recebido '{mc_str}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    if models_count > 0:
+        # Multi-model mode: require individual entries, not single MODEL_ID
+        for n in range(1, models_count + 1):
+            for suffix in ("_ID", "_SOURCE"):
+                var = f"MODEL_{n}{suffix}"
+                if var not in env:
+                    missing.append(var)
+    else:
+        # Single-model mode: require MODEL_ID and MODEL_SOURCE
+        for var, (typ, default) in ENV_SCHEMA.items():
+            if default is None and var != "MODELS_COUNT":
+                if var not in env:
+                    missing.append(var)
 
     if missing:
         print(f"FATAL: Required env var(s) not set: {', '.join(missing)}", file=sys.stderr)
@@ -184,13 +226,92 @@ def _escape_yaml_value(value: str) -> str:
     return value
 
 
+def _build_llm_configs(env: dict[str, str]) -> str:
+    """Build the multi-model llm_configs YAML block from env vars.
+
+    If MODELS_COUNT > 0, generates numbered entries using MODEL N_ID/SOURCE.
+    Otherwise, returns empty string (single-model mode uses the template's
+    fallback entry).
+    """
+    mc_str = env.get("MODELS_COUNT", "0")
+    try:
+        models_count = int(mc_str) if mc_str else 0
+    except ValueError:
+        models_count = 0
+
+    if models_count < 1:
+        return ""  # single-model mode — keep template fallback entry
+
+    gpu_util = env.get("GPU_MEMORY_UTILIZATION", "0.9")
+    max_len = env.get("MAX_MODEL_LEN", "8192")
+    entries: list[str] = []
+
+    for n in range(1, models_count + 1):
+        model_id = env.get(f"MODEL_{n}_ID", "")
+        model_source = env.get(f"MODEL_{n}_SOURCE", "")
+        if not model_id or not model_source:
+            # Silently skip incomplete entries
+            continue
+        entries.append(
+            MODEL_CONFIG_TEMPLATE.format(
+                model_id=model_id,
+                model_source=model_source,
+                gpu_util=gpu_util,
+                max_len=max_len,
+            )
+        )
+
+    return "\n".join(entries)
+
+
 def _substitute(raw: str, env: dict[str, str]) -> str:
     """Replace ${VAR} placeholders with values from *env*.
+
+    Also handles the ##LLM_CONFIGS## marker for multi-model support:
+    - If MODELS_COUNT > 0: generates numbered model entries from env vars
+      and removes the fallback single-model entry below the marker.
+    - Otherwise: replaces the marker with empty string, keeping the
+      fallback entry for single-model backward compatibility.
 
     Values containing YAML special characters are automatically escaped.
     Unknown placeholders are left untouched so they produce an obvious
     error when Ray Serve tries to parse the rendered YAML.
     """
+    # Handle multi-model marker first
+    if LLM_CONFIGS_MARKER in raw:
+        mc_str = env.get("MODELS_COUNT", "0")
+        try:
+            models_count = int(mc_str) if mc_str else 0
+        except ValueError:
+            models_count = 0
+
+        if models_count > 0:
+            # Multi-model: replace marker with generated entries, skip fallback
+            generated = _build_llm_configs(env)
+            lines = raw.split("\n")
+            new_lines = []
+            skip_until_section = False
+            for line in lines:
+                if LLM_CONFIGS_MARKER in line:
+                    # Keep the llm_configs: key, replace marker with content
+                    prefix = line.split(LLM_CONFIGS_MARKER)[0]
+                    new_lines.append(f"{prefix}\n{generated}")
+                    skip_until_section = True
+                    continue
+                if skip_until_section:
+                    # Skip fallback entry lines (indented >= 4 spaces)
+                    # Stop when reaching a line at 0-2 space indent (new section)
+                    indent = len(line) - len(line.lstrip())
+                    if indent <= 2 and line.strip():
+                        skip_until_section = False
+                        new_lines.append(line)
+                    continue
+                new_lines.append(line)
+            raw = "\n".join(new_lines)
+        else:
+            # Single-model: just remove the marker, keep fallback entry
+            raw = raw.replace(LLM_CONFIGS_MARKER, "")
+
     def _replacer(match: re.Match) -> str:
         name = match.group(1)
         raw_match: str = match.group(0) or match.string[match.start() : match.end()]
@@ -223,25 +344,47 @@ def _validate_yaml(rendered: str) -> None:
         print(f"FATAL: No llm_configs found in first application entry", file=sys.stderr)
         sys.exit(1)
 
-    mlc = llm_configs[0].get("model_loading_config", {})
-    if not mlc.get("model_id") or not mlc.get("model_source"):
-        print(
-            f"FATAL: model_loading_config missing model_id or model_source "
-            f"after substitution — check env vars",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+    # Validate each llm_config has model_id and model_source
+    for i, cfg in enumerate(llm_configs):
+        mlc = cfg.get("model_loading_config", {})
+        if not mlc.get("model_id") or not mlc.get("model_source"):
+            print(
+                f"FATAL: llm_config[{i}] (model_id='{mlc.get('model_id')}', "
+                f"model_source='{mlc.get('model_source')}') "
+                f"missing model_id or model_source after substitution",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 
 def _log_diagnostics(env: dict[str, str]) -> None:
     """Print a one-line summary of what will be used."""
-    print(
-        f"Config: model={env['MODEL_ID']} "
-        f"source={env['MODEL_SOURCE']} "
-        f"max_len={env['MAX_MODEL_LEN']} "
-        f"gpu_util={env['GPU_MEMORY_UTILIZATION']}",
-        file=sys.stderr,
-    )
+    mc_str = env.get("MODELS_COUNT", "0")
+    try:
+        models_count = int(mc_str) if mc_str else 0
+    except ValueError:
+        models_count = 0
+
+    if models_count > 0:
+        models = []
+        for n in range(1, models_count + 1):
+            mid = env.get(f"MODEL{n}_ID", "")
+            if mid:
+                models.append(f"{mid}")
+        print(
+            f"Config: {models_count} model(s) — {', '.join(models)} "
+            f"max_len={env.get('MAX_MODEL_LEN', '8192')} "
+            f"gpu_util={env.get('GPU_MEMORY_UTILIZATION', '0.9')}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"Config: model={env.get('MODEL_ID', '?')} "
+            f"source={env.get('MODEL_SOURCE', '?')} "
+            f"max_len={env.get('MAX_MODEL_LEN', '8192')} "
+            f"gpu_util={env.get('GPU_MEMORY_UTILIZATION', '0.9')}",
+            file=sys.stderr,
+        )
 
 
 # ── Public API (for unit tests) ─────────────────────────────────────────────

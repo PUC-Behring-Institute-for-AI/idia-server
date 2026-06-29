@@ -81,7 +81,7 @@ class TestRenderConfig:
                             },
                             "deployment_config": {
                                 "autoscaling_config": {
-                                    "min_replicas": 1,
+                                    "min_replicas": 0,
                                     "max_replicas": 4,
                                     "target_ongoing_requests": 64,
                                 },
@@ -130,7 +130,7 @@ class TestRenderConfig:
                             },
                             "deployment_config": {
                                 "autoscaling_config": {
-                                    "min_replicas": 1,
+                                    "min_replicas": 0,
                                     "max_replicas": 4,
                                     "target_ongoing_requests": 64,
                                 },
@@ -177,8 +177,77 @@ class TestRenderConfig:
         assert len(apps) == 1
         llm_cfg = apps[0]["args"]["llm_configs"][0]
         assert llm_cfg["model_loading_config"]["model_id"] == "test-model"
-        assert llm_cfg["deployment_config"]["autoscaling_config"]["min_replicas"] == 1
+        assert llm_cfg["deployment_config"]["autoscaling_config"]["min_replicas"] == 0
         assert llm_cfg["deployment_config"]["autoscaling_config"]["max_replicas"] == 4
+
+    def test_multi_model_renders_multiple_entries(self) -> None:
+        """Multi-model MODELS_COUNT=N generates N llm_config entries."""
+        from scripts.render_config import render
+
+        template = (
+            "proxy_location: EveryNode\n"
+            "http_options:\n"
+            "  host: 0.0.0.0\n"
+            "  port: 8000\n"
+            "applications:\n"
+            "  - name: llms\n"
+            "    import_path: ray.serve.llm:build_openai_app\n"
+            "    route_prefix: /\n"
+            "    args:\n"
+            "      llm_configs: ##LLM_CONFIGS##\n"
+            "        - model_loading_config:\n"
+            "            model_id: ${MODEL_ID}\n"
+            "            model_source: ${MODEL_SOURCE}\n"
+        )
+        overrides = {
+            "MODELS_COUNT": "2",
+            "MODEL_1_ID": "llama-3.1-8b",
+            "MODEL_1_SOURCE": "meta-llama/Llama-3.1-8B-Instruct",
+            "MODEL_2_ID": "qwen-2.5-14b",
+            "MODEL_2_SOURCE": "Qwen/Qwen2.5-14B-Instruct",
+            "MODEL_ID": "fallback",
+            "MODEL_SOURCE": "org/fallback",
+        }
+        rendered = render(template, overrides=overrides)
+        # Marker should NOT appear in output
+        assert "LLM_CONFIGS" not in rendered, f"Marker leaked:\n{rendered}"
+        parsed = yaml.safe_load(rendered)
+        configs = parsed["applications"][0]["args"]["llm_configs"]
+        assert len(configs) == 2, f"Expected 2 llm_configs, got {len(configs)}"
+        assert configs[0]["model_loading_config"]["model_id"] == "llama-3.1-8b"
+        assert configs[1]["model_loading_config"]["model_id"] == "qwen-2.5-14b"
+        # Fallback entry should NOT appear (multi-model mode removes it)
+        assert not any(c["model_loading_config"]["model_id"] == "fallback" for c in configs)
+
+    def test_multi_model_single_model_backward_compat(self) -> None:
+        """Single MODEL_ID works when MODELS_COUNT is absent (marker removed, fallback kept)."""
+        from scripts.render_config import render
+
+        template = (
+            "proxy_location: EveryNode\n"
+            "http_options:\n"
+            "  host: 0.0.0.0\n"
+            "  port: 8000\n"
+            "applications:\n"
+            "  - name: llms\n"
+            "    import_path: ray.serve.llm:build_openai_app\n"
+            "    route_prefix: /\n"
+            "    args:\n"
+            "      llm_configs: ##LLM_CONFIGS##\n"
+            "        - model_loading_config:\n"
+            "            model_id: ${MODEL_ID}\n"
+            "            model_source: ${MODEL_SOURCE}\n"
+        )
+        overrides = {
+            "MODEL_ID": "test-model",
+            "MODEL_SOURCE": "test-org/test-model",
+        }
+        rendered = render(template, overrides=overrides)
+        assert "LLM_CONFIGS" not in rendered, f"Marker leaked:\n{rendered}"
+        parsed = yaml.safe_load(rendered)
+        configs = parsed["applications"][0]["args"]["llm_configs"]
+        assert len(configs) == 1, f"Expected 1 llm_config, got {len(configs)}"
+        assert configs[0]["model_loading_config"]["model_id"] == "test-model"
 
     def test_dry_run_flag(self, scripts_dir: Path) -> None:
         """--dry-run renders to stdout without launching serve."""
@@ -313,7 +382,7 @@ class TestRenderSchemaErrors:
                             },
                             "deployment_config": {
                                 "autoscaling_config": {
-                                    "min_replicas": 1,
+                                    "min_replicas": 0,
                                     "max_replicas": 1,
                                     "target_ongoing_requests": 64,
                                 },

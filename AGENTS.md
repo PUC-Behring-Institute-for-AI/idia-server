@@ -48,17 +48,23 @@ idia-server/
 │   └── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
 ├── grafana/               ← dashboards e datasources (Phase 4 ✓)
 │   ├── datasources/       ← provisioning do datasource Prometheus
-│   └── dashboards/        ← JSONs importados dos dashboards oficiais Ray/vLLM
+│   │   └── datasource.yml
+│   ├── dashboards/        ← dashboards provisionados (vLLM, Ray) (Phase 4 ✓)
+│   │   ├── dashboard.yml  ← provider config
+│   │   └── vllm-dashboard.json  ← dashboard oficial vLLM (ID 25043)
 ├── tests/                 ← suíte de testes (pytest)
 │   ├── __init__.py
 │   ├── conftest.py        ← fixtures compartilhadas
 │   ├── test_docs.py       ← testes de estrutura de documentação
 │   ├── test_config_schemas.py  ← testes de schema de configs
-│   ├── test_integration.py ← testes de integração simulados (render_config, Compose) (Phase 2 ✓)
+│   ├── test_integration.py ← testes de integração simulados (render_config, Compose, multi-model) (Phase 2 ✓)
 │   └── test_security.py   ← testes de segurança (portas, pinning, boundaries) (Phase 2 ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
 │   ├── ADR.md             ← Architecture Decision Records (Phase 5 ✓)
+│   ├── audit_logs/        ← relatórios de auditoria vettados
+│   │   ├── 2026-06-28_audit_vettato.md
+│   │   └── 2026-06-28_audit_structural_vettato.md
 │   └── ...                ← futuros: GLOSSARY.md conforme necessário
 └── README.md              ← documentação do repositório (Phase 1 ✓)
 ```

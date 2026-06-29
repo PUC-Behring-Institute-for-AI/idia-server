@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: "IDIA Server Dashboards"
+    orgId: 1
+    folder: "IDIA Server"
+    type: file
+    disableDeletion: false
+    editable: false
+    options:
+      path: /var/lib/grafana/dashboards

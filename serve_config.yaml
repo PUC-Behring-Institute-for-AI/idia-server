@@ -3,6 +3,10 @@
 #
 # Proxy binds inside the container only (:8000). The port is NEVER
 # published to the host — see docs/ARCHITECTURE.md §9.3.
+#
+# Single-model mode: set MODEL_ID + MODEL_SOURCE (backward compatible).
+# Multi-model mode: set MODELS_COUNT=N and MODEL_1_ID .. MODEL_N_SOURCE.
+#   Each model gets its own deployment with autoscaling.
 
 proxy_location: EveryNode
 http_options:
@@ -14,7 +18,7 @@ applications:
     import_path: ray.serve.llm:build_openai_app
     route_prefix: "/"
     args:
-      llm_configs:
+      llm_configs: ##LLM_CONFIGS##
         - model_loading_config:
             model_id: ${MODEL_ID}
             model_source: ${MODEL_SOURCE}
@@ -24,6 +28,6 @@ applications:
             max_model_len: ${MAX_MODEL_LEN}
           deployment_config:
             autoscaling_config:
-              min_replicas: 1
+              min_replicas: 0
               max_replicas: 4
               target_ongoing_requests: 64

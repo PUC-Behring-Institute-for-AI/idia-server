@@ -24,8 +24,18 @@ services:
       - idia_hf_cache:/root/.cache/huggingface
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      # Single-model (backward compatible)
       - MODEL_ID=${MODEL_ID}
       - MODEL_SOURCE=${MODEL_SOURCE}
+      # Multi-model: set MODELS_COUNT=N and MODEL_1_ID..MODEL_N_SOURCE
+      # See docs/ARCHITECTURE.md §5.3 for details
+      - MODELS_COUNT=${MODELS_COUNT:-}
+      - MODEL_1_ID=${MODEL_1_ID:-}
+      - MODEL_1_SOURCE=${MODEL_1_SOURCE:-}
+      - MODEL_2_ID=${MODEL_2_ID:-}
+      - MODEL_2_SOURCE=${MODEL_2_SOURCE:-}
+      - MODEL_3_ID=${MODEL_3_ID:-}
+      - MODEL_3_SOURCE=${MODEL_3_SOURCE:-}
       - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
     healthcheck:

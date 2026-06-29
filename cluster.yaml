@@ -28,6 +28,7 @@
 cluster_name: inference-cluster
 min_workers: 0
 max_workers: 4
+idle_timeout_minutes: 5
 
 provider:
   type: aws
@@ -36,6 +37,8 @@ provider:
 docker:
   image: "rayproject/ray-ml:2.55.0-py311-gpu"
   container_name: "ray_container"
+  run_options:
+    - "--env HF_TOKEN=${HF_TOKEN}"
 
 available_node_types:
   head_node:
@@ -71,7 +74,7 @@ file_mounts:
 
 # Commands run on the head node inside the Docker container.
 head_setup_commands:
-  - pip install --quiet "ray[serve,llm]==2.55.0" vllm
+  - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
 
 # Commands to start Ray on the head node.
 # --dashboard-host=127.0.0.1 is MANDATORY for security (§9.2).

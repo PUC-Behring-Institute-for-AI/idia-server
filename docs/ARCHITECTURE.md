@@ -172,7 +172,7 @@ serve.run(app)
 
 LiteLLM treats Ray Serve's ingress as a custom OpenAI-compatible provider: the provider token is `openai` (meaning "speak the OpenAI protocol to this base URL"), and everything after the first `/` is the model identifier passed through to the backend.
 
-The configuration is maintained in `config.yaml` at the repository root, rendered with env var substitution at runtime. The master key is injected via `${LITELLM_MASTER_KEY:sk-admin}` (fallback default `sk-admin`).
+The configuration is maintained in `config.yaml` at the repository root, rendered with env var substitution at runtime. The master key is injected via `${LITELLM_MASTER_KEY}` (required — no fallback; see SEC-01).
 
 ```yaml
 model_list:
@@ -183,13 +183,13 @@ model_list:
       api_key: "placeholder"            # Ray's ingress has no per-request key by default — see §9.3
 
 general_settings:
-  master_key: ${LITELLM_MASTER_KEY:sk-admin}
+  master_key: ${LITELLM_MASTER_KEY}    # required — no fallback (SEC-01)
   background_health_checks: true
   health_check_interval: 30
   enable_health_check_routing: true
 ```
 
-`background_health_checks` lets LiteLLM proactively drop an unreachable backend from its routing pool before a real request hits it — relevant when a model is mid-cold-start or a node is being replaced. The `master_key` placeholder is substituted at runtime by the LiteLLM process itself, which parses `${VAR:default}` syntax natively.
+`background_health_checks` lets LiteLLM proactively drop an unreachable backend from its routing pool before a real request hits it — relevant when a model is mid-cold-start or a node is being replaced. The `master_key` is validated by `deploy_cluster.sh` (rejects placeholders) and by `render_config.py` (required env var).
 
 For the full file, see `config.yaml` at the repository root. For client consumption patterns, see §8.
 
@@ -247,7 +247,7 @@ applications:
             max_model_len: ${MAX_MODEL_LEN}
           deployment_config:
             autoscaling_config:
-              min_replicas: 1
+              min_replicas: 0
               max_replicas: 4
               target_ongoing_requests: 64
 ```
@@ -255,6 +255,15 @@ applications:
 Placeholders `${VAR}` are substituted at runtime by `render_config.py` (§5.6).
 The env vars that map to each placeholder are documented in §5.5 and in
 `.env.example` at the repository root.
+
+**Multi-model mode:** Set `MODELS_COUNT=N` and `MODEL_1_ID` / `MODEL_1_SOURCE`
+through `MODEL_N_ID` / `MODEL_N_SOURCE`. The `##LLM_CONFIGS##` marker in the
+template triggers dynamic generation of `N` model entries, each with its own
+deployment and independent autoscaling (min_replicas=0, scale-to-zero).
+Single-model mode (`MODEL_ID` / `MODEL_SOURCE`) remains fully backward-compatible.
+
+See `tests/test_integration.py::TestRenderConfig::test_multi_model_renders_multiple_entries`
+for the expected output structure.
 
 ### 5.4 `docker-compose.yml`
 
@@ -270,8 +279,17 @@ services:
       - idia_hf_cache:/root/.cache/huggingface
     environment:
       - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN}
+      # Single-model (backward compatible)
       - MODEL_ID=${MODEL_ID}
       - MODEL_SOURCE=${MODEL_SOURCE}
+      # Multi-model: set MODELS_COUNT=N and MODEL_N_ID/MODEL_N_SOURCE (§5.3)
+      - MODELS_COUNT=${MODELS_COUNT:-}
+      - MODEL_1_ID=${MODEL_1_ID:-}
+      - MODEL_1_SOURCE=${MODEL_1_SOURCE:-}
+      - MODEL_2_ID=${MODEL_2_ID:-}
+      - MODEL_2_SOURCE=${MODEL_2_SOURCE:-}
+      - MODEL_3_ID=${MODEL_3_ID:-}
+      - MODEL_3_SOURCE=${MODEL_3_SOURCE:-}
       - MAX_MODEL_LEN=${MAX_MODEL_LEN:-8192}
       - GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
     healthcheck:
@@ -428,26 +446,35 @@ on `serve_config.yaml` before delegating to Ray Serve.
 **Behavior:**
 
 1. Locate `serve_config.yaml` (searches script directory then `/app`).
-2. Read template with `${VAR}` placeholders (`_read_file` with explicit
-   `try/except` for file-not-found, permission, and encoding errors).
-3. Collect environment: required vars (`MODEL_ID`, `MODEL_SOURCE`) must be set;
-   optional vars (`MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`) get defaults via
-   `_apply_defaults()`.
-4. Validate values against schema constraints:
-   - `GPU_MEMORY_UTILIZATION` must parse as float in range (0, 1].
-   - `MAX_MODEL_LEN` must be a positive integer string.
-   Exit code 1 with clear diagnostic on failure.
-5. Substitute placeholders using regex `\$\{(\w+)\}`. Values containing YAML
-   special characters (`:`, `{`, `}`, `\n`, `#`) are automatically escaped
-   as quoted YAML scalars via `_escape_yaml_value()` to prevent YAML injection
-   (SEC-06).
-6. Validate rendered YAML: parse with `yaml.safe_load`, verify structural
-   keys (`applications`, `llm_configs`, `model_loading_config` with non-empty
+2. Read template with `${VAR}` placeholders and optional `##LLM_CONFIGS##`
+   marker for multi-model (`_read_file` with explicit `try/except` for
+   file-not-found, permission, and encoding errors).
+3. Collect environment:
+   - **Single-model mode** (default): required vars `MODEL_ID`, `MODEL_SOURCE`
+     must be set.
+   - **Multi-model mode** (when `MODELS_COUNT=N` is set): required vars
+     `MODEL_1_ID`/`MODEL_1_SOURCE` through `MODEL_N_ID`/`MODEL_N_SOURCE`
+     must be set; `MODEL_ID`/`MODEL_SOURCE` are not validated.
+   - Optional vars (`MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`) get defaults
+     via `_apply_defaults()`.
+4. Validate values against schema constraints (same as single-model).
+5. Handle `##LLM_CONFIGS##` marker:
+   - **Multi-model**: generate N `llm_config` entries from `MODEL_N_ID`/
+     `MODEL_N_SOURCE`, replace marker with generated YAML, remove fallback
+     single-model entry.
+   - **Single-model**: remove marker, keep fallback entry for backward
+     compatibility.
+6. Substitute `${VAR}` placeholders using regex `\$\{(\w+)\}`. Values
+   containing YAML special characters (`:`, `{`, `}`, `\n`, `#`) are
+   automatically escaped as quoted YAML scalars via `_escape_yaml_value()`
+   to prevent YAML injection (SEC-06).
+7. Validate rendered YAML: parse with `yaml.safe_load`, verify structural
+   keys (`applications`, `llm_configs`, each entry with non-empty
    `model_id` and `model_source`).
-7. Write rendered YAML to a deterministic path (`/tmp/idia_serve_config.yaml`,
+8. Write rendered YAML to a deterministic path (`/tmp/idia_serve_config.yaml`,
    overwritten on each run) — replaces the previous `NamedTemporaryFile`
    approach that leaked files on `os.execlp` (BUG-03).
-8. `exec serve run` on the rendered file (replaces the Python process).
+9. `exec serve run` on the rendered file (replaces the Python process).
 
 **Testing hook:** the module exposes a `render()` pure function and a
 `--dry-run` CLI flag that prints the rendered YAML to stdout without
@@ -596,6 +623,7 @@ this stack.
 cluster_name: inference-cluster
 min_workers: 0
 max_workers: 4
+idle_timeout_minutes: 5                 # terminate idle workers after 5 min
 
 provider:
   type: aws
@@ -604,6 +632,8 @@ provider:
 docker:
   image: "rayproject/ray-ml:2.55.0-py311-gpu"     # pinned — no :latest
   container_name: "ray_container"
+  run_options:
+    - "--env HF_TOKEN=${HF_TOKEN}"                 # required for gated models
 
 available_node_types:
   head_node:
@@ -631,7 +661,7 @@ file_mounts:
   "/app/rendered_config.yaml": "./rendered_config.yaml"
 
 head_setup_commands:
-  - pip install --quiet "ray[serve,llm]==2.55.0" vllm
+  - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
 
 head_start_ray_commands:
   - ray stop
@@ -648,6 +678,17 @@ head_start_ray_commands:
 > template and running `render_config.py` on the head node added unnecessary
 > complexity. Pre-rendering is the simplest approach and reuses the Phase 2
 > entrypoint.
+
+Changes from audit remediation (2026-06-28):
+- **`idle_timeout_minutes: 5`:** terminates GPU workers after 5 minutes of
+  inactivity, preventing runaway costs if a replica enters crashloop (STRUCT-08).
+- **`run_options` with `HF_TOKEN`:** injects the HuggingFace token into all
+  Ray containers (workers included), enabling gated model downloads on GPU
+  workers (STRUCT-07). Without this, models like LLaMA-3.1-8B-Instruct fail
+  to download on AWS with `401 Unauthorized`.
+- **`vllm==0.5.4` pinned:** ensures the vLLM version on the head node matches
+  the local Dockerfile.ray, preventing behavioral divergence between local
+  and AWS inference (STRUCT-05).
 
 **Deployment workflow:**
 
@@ -712,6 +753,58 @@ Justified by multi-team GPU sharing, an existing Kubernetes investment, or need 
 | g6.xlarge / g5.xlarge | 1× L4 / A10G (24GB) | 7–8B models; the worker type used above |
 | g6.12xlarge | 4× L4 | 13B–34B, or several 7–8B replicas per node |
 | p4d.24xlarge | 8× A100 (40GB) | 70B-class with tensor parallelism (sold only as a full 8-GPU node) |
+
+### 7.6 Budget protection
+
+GPU instances cost \$0.50–\$32/hr on demand. Without protection, a stuck
+GPU worker (e.g. replica crashloop, autoscaler failure, OOM loop) can
+accumulate significant cost before detection.
+
+**AWS Budget alert (IaC — AWS CLI):**
+
+```bash
+aws budgets create-budget \
+  --account-id "$(aws sts get-caller-identity --query Account --output text)" \
+  --budget '{
+      "BudgetName": "idia-server-gpu",
+      "BudgetType": "COST",
+      "BudgetLimit": {"Amount": "500", "Unit": "USD"},
+      "CostFilters": {"Service": ["Amazon Elastic Compute Cloud - Compute"]},
+      "TimePeriod": {"StartDate": "2026-01-01", "EndDate": "2027-01-01"},
+      "TimeUnit": "MONTHLY"
+    }' \
+  --notifications-with-subscribers '[
+      {
+        "Notification": {
+          "NotificationType": "ACTUAL",
+          "ComparisonOperator": "GREATER_THAN",
+          "Threshold": 80,
+          "ThresholdType": "PERCENTAGE"
+        },
+        "Subscribers": [{"Address": "admin@instituto.br", "SubscriptionType": "EMAIL"}]
+      },
+      {
+        "Notification": {
+          "NotificationType": "FORECASTED",
+          "ComparisonOperator": "GREATER_THAN",
+          "Threshold": 100,
+          "ThresholdType": "PERCENTAGE"
+        },
+        "Subscribers": [{"Address": "admin@instituto.br", "SubscriptionType": "EMAIL"}]
+      }
+    ]'
+```
+
+**Built-in protections in current config:**
+
+| Protection | Mechanism | Status |
+|-----------|-----------|--------|
+| Scale-to-zero workers | `min_workers: 0` + `idle_timeout_minutes: 5` | ✅ Configured |
+| Replica autoscaling | `min_replicas: 0`, `target_ongoing_requests: 64` | ✅ Configured |
+| Memory limit | `RAY_MEMORY_LIMIT: 16g` prevents unbounded swap | ✅ Configured |
+| Crashloop protection | Ray retries replicas (no max_retries — STRUCT-14 gap) | ⚠️ No hard limit |
+| Budget alert | AWS Budget (see above) — manual setup | ❌ Not automated |
+| Cost anomaly detection | No AWS CloudWatch Anomaly Detection configured | ❌ Future |
 | p5e.48xlarge | 8× H200 (141GB) | Frontier MoE (hundreds of GB of weights); also a full-node-only purchase |
 
 ---
@@ -868,14 +961,16 @@ Key properties:
 - **Automatic datasource provisioning**: `grafana/datasources/datasource.yml`
   configures Prometheus as the default datasource pointing to
   `http://prometheus:9090` — no manual setup.
-- **Dashboard directory**: place downloaded JSON files from the official
-  Ray Serve and vLLM dashboards in `grafana/dashboards/` for automatic
-  provisioning. Links: search "Ray" and "vLLM" on
-  https://grafana.com/grafana/dashboards/.
+- **Provisioned dashboards**: `grafana/dashboards/vllm-dashboard.json` is the
+  official vLLM dashboard (grafana.com/dashboards/25043), versioned alongside
+  the pinned vLLM engine. Dashboards are pinned to specific Grafana versions
+  to prevent format drift. Additional dashboards can be added to this directory
+  for automatic provisioning.
 
-**Warning:** The Ray and vLLM dashboard JSONs change between versions.
-Do not version them in this repository — download and import the versions
-matching `rayproject/ray-ml:2.55.0` and the bundled vLLM version.
+**Version alignment:** Dashboard JSONs must match the deployed Grafana version
+(`grafana/grafana:11.4.0`). If upgrading Grafana, re-download the official
+dashboards matching the new version. The vLLM dashboard tracks the pinned
+`vllm==0.5.4` metrics schema.
 
 **Accessing Grafana:**
 
@@ -1226,6 +1321,7 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 | 2026-06-28 | Phase 3: Updated §7.3 (pre-render workflow for cluster.yaml — decision record), expanded §7.2 (step-by-step EC2 + Compose guide with security group table), added §7.3 deploy automation script reference, extended test tables in §11 with Phase 3 tests (TestClusterYaml extended, TestClusterSecurity); new Governance & Maintainability Axioms in AGENTS.md (Decision Closure, Architecture Feedback Loop, Traceability Axiom) | AWS Deployment implementation |
 | 2026-06-28 | Phase 5: Updated §16 (added §16.6 ADR.md decision records); created `docs/ADR.md` with 8 ADRs (phases 1-5); updated `LICENSE` (Apache 2.0); added cross-doc consistency tests (TestReadmeDirectoryTree, TestADRValidation); updated §18 footer | Final Documentation — revision + handoff |
 | 2026-06-28 | Audit remediation — 23 fixes: (§5.2 Dockerfile: vLLM pinned 0.5.4); (§5.4 Compose: HF named volume, Grafana password, health checks, memory limits, Prometheus retention, shm override); (§5.6 entrypoint: schema validation, YAML escape, deterministic path, dependency declaration); Config: SEC-01/SEC-04 fixed; Deploy: SEC-02/SEC-10/BUG-04/BUG-05 fixed; AGENTS.md: 6 new Code Quality Axioms; Tests: TestRenderSchemaErrors added + type validation | Audit response (2026-06-28) |
+| 2026-06-28 | Structural audit remediation — 16 findings: (§5.3 serve_config: multi-model via ##LLM_CONFIGS## marker, min_replicas:0); (§5.4 Compose: multi-model env vars); (§5.6 entrypoint: multi-model MODELS_COUNT support); (§7.3 cluster.yaml: idle_timeout_minutes, run_options for HF_TOKEN, vLLM pin 0.5.4); (§7.6 budget protection); (§10.3 dashboards: provisioned vLLM dashboard); Config: rate limiting tiers, multi-model routing; AGENTS.md: multi-model docs; Tests: multi-model render tests (2 new) | Structural audit (2026-06-28) |
 
 ---
 
@@ -1245,4 +1341,4 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.6 | Last updated: 2026-06-28 | Sections changed: §5.2 (vLLM pinning), §5.4 (Compose — HF volume, Grafana password, health checks, memory, retention, shm), §5.5 (expanded env var table), §5.6 (schema validation, YAML escape, deterministic path, dependency declaration), §10.2 (Prometheus retention), §16.7 (audit remediation entry), AGENTS.md Code Quality Axioms (6 new rules)*
+*Document version: 1.7 | Last updated: 2026-06-28 | Sections changed: §5.3 (multi-model ##LLM_CONFIGS## marker, min_replicas:0), §5.4 (multi-model env vars), §5.6 (multi-model entrypoint flow), §7.3 (cluster.yaml — idle_timeout, run_options, vLLM pin), §7.6 (new — budget protection), §10.3 (provisioned dashboards), §16.7 (structural audit entry)*
