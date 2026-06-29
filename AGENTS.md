@@ -45,7 +45,11 @@ idia-server/
 ├── prometheus.yml         ← monitoring scrape config (Phase 4 ✓)
 ├── scripts/               ← utilitários (entrypoint, helpers)
 │   ├── render_config.py   ← entrypoint Python — substitui placeholders env var (Phase 2 ✓)
-│   └── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
+│   ├── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
+│   ├── create_security_groups.sh  ← AWS security group creator (Tier 4 ✓)
+│   ├── cache_models.sh    ← Model cache S3 sync (Tier 4 ✓)
+│   ├── smoke_test.sh      ← Post-deploy smoke test (Tier 4 ✓)
+│   └── create_user.sh     ← LiteLLM virtual key creator (Tier 4 ✓)
 ├── grafana/               ← dashboards e datasources (Phase 4 ✓)
 │   ├── datasources/       ← provisioning do datasource Prometheus
 │   │   └── datasource.yml
@@ -368,6 +372,7 @@ cada uma com seu marcador e requisitos de infraestrutura.
 | `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example`; Grafana datasource provisioning | Não — apenas PyYAML | 1 |
 | `integration` | Integração | `render_config.py`: substituição de env vars, validação YAML, dry-run, caminhos de erro; consistência do Compose (build source, pinning, env vars) | Componente unitário: apenas pytest; full suite: Docker + GPU | 2 |
 | `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente; apenas `:4000` externa; `:9090` não publicada; `:3000` bound a localhost), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
+| (none) | Contrato LiteLLM | Simulação de API LiteLLM: rejeição de modelo inexistente, auth ausente, mensagens inválidas, formato de resposta | Não — puro Python com mock | 5 (Tier 4) |
 
 ### Como executar
 

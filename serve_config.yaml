@@ -27,6 +27,8 @@ applications:
             gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}
             max_model_len: ${MAX_MODEL_LEN}
           deployment_config:
+            health_check_period_s: 30
+            health_check_timeout_s: 10
             autoscaling_config:
               min_replicas: 0
               max_replicas: 4

@@ -42,6 +42,8 @@ ENV_SCHEMA: dict[str, tuple[type, object]] = {
     "MAX_MODEL_LEN": (int, 8192),
     "GPU_MEMORY_UTILIZATION": (float, 0.9),
     "MODELS_COUNT": (int, None),  # set >0 for multi-model mode
+    "GPU_COUNT": (int, 1),  # number of GPUs available (for VRAM budget validation)
+    "GPU_VRAM_GB": (float, 24.0),  # VRAM per GPU in GB (A10G = 24, A100 = 40/80)
 }
 
 TEMPLATE_FILENAME = "serve_config.yaml"
@@ -62,6 +64,8 @@ MODEL_CONFIG_TEMPLATE = """        - model_loading_config:
             gpu_memory_utilization: {gpu_util}
             max_model_len: {max_len}
           deployment_config:
+            health_check_period_s: 30
+            health_check_timeout_s: 10
             autoscaling_config:
               min_replicas: 0
               max_replicas: 4
@@ -134,6 +138,9 @@ def _validate_schema_values(env: dict[str, str]) -> None:
     Currently validates:
       - GPU_MEMORY_UTILIZATION: must be float in (0, 1]
       - MAX_MODEL_LEN: must be a positive integer string
+      - GPU_COUNT: must be a positive integer
+      - GPU_VRAM_GB: must be a positive float
+      - Multi-model VRAM budget: total VRAM <= available GPU VRAM
 
     Exits with code 1 on validation failure.
     """
@@ -165,6 +172,60 @@ def _validate_schema_values(env: dict[str, str]) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+    # GPU_COUNT validation
+    gpu_count_str = env.get("GPU_COUNT", "1")
+    try:
+        gpu_count = int(gpu_count_str)
+        if gpu_count < 1:
+            print(
+                f"FATAL: GPU_COUNT deve ser >= 1, recebido '{gpu_count_str}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    except ValueError:
+        print(
+            f"FATAL: GPU_COUNT deve ser um inteiro, recebido '{gpu_count_str}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # GPU_VRAM_GB validation
+    vram_str = env.get("GPU_VRAM_GB", "24")
+    try:
+        vram_gb = float(vram_str)
+        if vram_gb <= 0:
+            print(
+                f"FATAL: GPU_VRAM_GB deve ser > 0, recebido '{vram_str}'",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    except ValueError:
+        print(
+            f"FATAL: GPU_VRAM_GB deve ser um número, recebido '{vram_str}'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # Multi-model VRAM budget: ensure models fit in available GPUs
+    mc_str = env.get("MODELS_COUNT", "0")
+    if mc_str:
+        try:
+            models_count = int(mc_str)
+        except ValueError:
+            return  # already validated in _collect_env
+
+        if models_count > 0:
+            total_util = models_count * gpu_util
+            if total_util > gpu_count:
+                print(
+                    f"FATAL: {models_count} modelo(s) com "
+                    f"GPU_MEMORY_UTILIZATION={gpu_util:.1f} cada = "
+                    f"{total_util:.1f}x GPU, mas GPU_COUNT={gpu_count}. "
+                    f"Reduza GPU_MEMORY_UTILIZATION ou aumente GPU_COUNT.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
 
 
 def _collect_env() -> dict[str, str]:
@@ -368,13 +429,14 @@ def _log_diagnostics(env: dict[str, str]) -> None:
     if models_count > 0:
         models = []
         for n in range(1, models_count + 1):
-            mid = env.get(f"MODEL{n}_ID", "")
+            mid = env.get(f"MODEL_{n}_ID", "")
             if mid:
                 models.append(f"{mid}")
         print(
             f"Config: {models_count} model(s) — {', '.join(models)} "
             f"max_len={env.get('MAX_MODEL_LEN', '8192')} "
-            f"gpu_util={env.get('GPU_MEMORY_UTILIZATION', '0.9')}",
+            f"gpu_util={env.get('GPU_MEMORY_UTILIZATION', '0.9')} "
+            f"gpu_count={env.get('GPU_COUNT', '1')}",
             file=sys.stderr,
         )
     else:
@@ -382,7 +444,8 @@ def _log_diagnostics(env: dict[str, str]) -> None:
             f"Config: model={env.get('MODEL_ID', '?')} "
             f"source={env.get('MODEL_SOURCE', '?')} "
             f"max_len={env.get('MAX_MODEL_LEN', '8192')} "
-            f"gpu_util={env.get('GPU_MEMORY_UTILIZATION', '0.9')}",
+            f"gpu_util={env.get('GPU_MEMORY_UTILIZATION', '0.9')} "
+            f"gpu_count={env.get('GPU_COUNT', '1')}",
             file=sys.stderr,
         )
 

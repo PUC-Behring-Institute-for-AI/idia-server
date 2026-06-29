@@ -64,6 +64,15 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
+# ── Ensure security group exists (AWS only) ──────────────────────────────────
+# Idempotent — safe to re-run. Skips if SG_NAME is empty.
+SG_NAME="${SG_NAME:-idia-server-sg}"
+if [ -n "$SG_NAME" ] && [ -x "$SCRIPT_DIR/create_security_groups.sh" ]; then
+    echo ""
+    echo "[Pre] Ensuring security group '$SG_NAME'..."
+    "$SCRIPT_DIR/create_security_groups.sh" 2>&1 || true
+fi
+
 # ── Placeholder patterns rejected as unsafe ──────────────────────────────────
 PLACEHOLDER_PATTERNS="^(placeholder|change-me|hf_xxx|your-.*|TODO|FIXME)$"
 
@@ -75,7 +84,17 @@ set -a
 source "$ENV_FILE"
 set +a
 
-REQUIRED_VARS=("HF_TOKEN" "LITELLM_MASTER_KEY" "MODEL_ID" "MODEL_SOURCE")
+REQUIRED_VARS=("HF_TOKEN" "LITELLM_MASTER_KEY")
+MULTI_MODEL=false
+if [ -n "${MODELS_COUNT:-}" ] && [ "$MODELS_COUNT" -gt 0 ] 2>/dev/null; then
+    MULTI_MODEL=true
+    for n in $(seq 1 "$MODELS_COUNT"); do
+        REQUIRED_VARS+=("MODEL_${n}_ID" "MODEL_${n}_SOURCE")
+    done
+else
+    REQUIRED_VARS+=("MODEL_ID" "MODEL_SOURCE")
+fi
+
 for var in "${REQUIRED_VARS[@]}"; do
     val="${!var:-}"
     if [ -z "$val" ]; then
@@ -90,13 +109,21 @@ for var in "${REQUIRED_VARS[@]}"; do
 done
 
 echo "[OK] .env loaded successfully"
-echo "     MODEL_ID=$MODEL_ID"
-echo "     MODEL_SOURCE=<configurado via .env>"
+if [ "$MULTI_MODEL" = true ]; then
+    echo "     MODELS_COUNT=$MODELS_COUNT"
+    for n in $(seq 1 "$MODELS_COUNT"); do
+        mid_var="MODEL_${n}_ID"
+        echo "     ${mid_var}=${!mid_var:-}"
+    done
+else
+    echo "     MODEL_ID=$MODEL_ID"
+    echo "     MODEL_SOURCE=<configurado via .env>"
+fi
 
 # ── Pre-render config ──────────────────────────────────────────────────────
 
 echo ""
-echo "[1/4] Pre-rendering serve_config.yaml..."
+echo "[1/5] Pre-rendering serve_config.yaml..."
 
 if [ ! -f "$SCRIPT_DIR/render_config.py" ]; then
     echo "ERROR: render_config.py not found at $SCRIPT_DIR/render_config.py"
@@ -122,7 +149,7 @@ fi
 # ── Launch cluster ─────────────────────────────────────────────────────────
 
 echo ""
-echo "[2/4] Launching Ray cluster (this takes ~5-10 minutes)..."
+echo "[2/5] Launching Ray cluster (this takes ~5-10 minutes)..."
 echo "      Head node: m5.large (CPU)"
 echo "      Worker:    g5.xlarge (GPU) × 0-4 (autoscaled)"
 
@@ -133,16 +160,33 @@ echo "  ✓ Cluster launched"
 # ── Deploy LLM app ──────────────────────────────────────────────────────────
 
 echo ""
-echo "[3/4] Deploying LLM app..."
+echo "[3/5] Deploying LLM app..."
 
 ray exec "$CLUSTER_FILE" "serve run /app/rendered_config.yaml"
 
 echo "  ✓ LLM app deployed"
 
+# ── Smoke test ──────────────────────────────────────────────────────────────
+
+echo ""
+echo "[4/5] Running smoke test..."
+
+HEAD_IP=$(ray get-head-ip "$CLUSTER_FILE" 2>/dev/null || true)
+if [ -n "$HEAD_IP" ]; then
+    if [ -x "$SCRIPT_DIR/smoke_test.sh" ]; then
+        "$SCRIPT_DIR/smoke_test.sh" "http://${HEAD_IP}:4000" 2>&1 || {
+            echo "  ⚠ Smoke test completed with failures — check logs."
+        }
+    fi
+else
+    echo "  ⚠ Could not determine head node IP — skipping smoke test."
+    echo "    Run manually: ./scripts/smoke_test.sh http://<head-ip>:4000"
+fi
+
 # ── Done ─────────────────────────────────────────────────────────────────────
 
 echo ""
-echo "[4/4] Done!"
+echo "[5/5] Done!"
 echo ""
 echo "=========================================="
 echo " IDIA Server deployed on AWS"

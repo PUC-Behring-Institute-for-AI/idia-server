@@ -246,6 +246,8 @@ applications:
             gpu_memory_utilization: ${GPU_MEMORY_UTILIZATION}
             max_model_len: ${MAX_MODEL_LEN}
           deployment_config:
+            health_check_period_s: 30     # crashloop protection (STRUCT-14 / T4.3)
+            health_check_timeout_s: 10
             autoscaling_config:
               min_replicas: 0
               max_replicas: 4
@@ -390,6 +392,10 @@ Changes from Phase 2:
 - **Prometheus retention:** `--storage.tsdb.retention.time=15d` and
   `--storage.tsdb.retention.size=5GB` prevent the `/prometheus` volume from
   growing unbounded (INFRA-01).
+- **DCGM Exporter (T4.2):** added `dcgm-exporter` service with `profiles: ["gpu"]`
+  to expose NVIDIA GPU metrics (utilization, VRAM, temperature) to Prometheus.
+  Only activates with `docker compose --profile gpu up` — skipped on macOS/CI
+  where no GPU is available. Port 9400 internal only (not published).
 
 ### 5.5 `.env`
 
@@ -416,6 +422,8 @@ GRAFANA_ADMIN_PASSWORD=      # required if Grafana is enabled (see §5.4)
 | `MODEL_SOURCE` | Yes | str | — | `serve_config.yaml` (Ray) |
 | `MAX_MODEL_LEN` | No | int | 8192 | `serve_config.yaml` (vLLM engine_kwargs) |
 | `GPU_MEMORY_UTILIZATION` | No | float | 0.9 | `serve_config.yaml` (vLLM engine_kwargs) |
+| `GPU_COUNT` | No | int | 1 | `render_config.py` (multi-model VRAM budget check, T4.1) |
+| `GPU_VRAM_GB` | No | float | 24.0 | `render_config.py` (multi-model VRAM budget check, T4.1) |
 | `GRAFANA_ADMIN_PASSWORD` | Yes* | str | — | `docker-compose.yml` (Grafana) |
 | `RAY_SHM_SIZE` | No | str | 4gb | `docker-compose.yml` (ray-head shm_size) |
 | `RAY_MEMORY_LIMIT` | No | str | 16g | `docker-compose.yml` (ray-head deploy.limits.memory) |
@@ -457,7 +465,12 @@ on `serve_config.yaml` before delegating to Ray Serve.
      must be set; `MODEL_ID`/`MODEL_SOURCE` are not validated.
    - Optional vars (`MAX_MODEL_LEN`, `GPU_MEMORY_UTILIZATION`) get defaults
      via `_apply_defaults()`.
-4. Validate values against schema constraints (same as single-model).
+ 4. **Schema validation:** validates values against constraints:
+    - `GPU_MEMORY_UTILIZATION`: float in (0, 1]
+    - `MAX_MODEL_LEN`: positive integer
+    - `GPU_COUNT`: positive integer (≥ 1)
+    - `GPU_VRAM_GB`: positive float
+    - **VRAM budget (T4.1):** in multi-model mode, checks that `MODELS_COUNT × GPU_MEMORY_UTILIZATION ≤ GPU_COUNT`. If exceeded, exits with diagnostic. This prevents silently scheduling 3 models on 1 GPU at 90% utilization each (would OOM).
 5. Handle `##LLM_CONFIGS##` marker:
    - **Multi-model**: generate N `llm_config` entries from `MODEL_N_ID`/
      `MODEL_N_SOURCE`, replace marker with generated YAML, remove fallback
@@ -709,7 +722,8 @@ ray dashboard cluster.yaml
 **Automated deployment (wrapper script):**
 
 ```bash
-# Validates .env, pre-renders, runs ray up + ray exec in one step
+# Validates .env (including multi-model), pre-renders, ensures security groups,
+# runs ray up + ray exec, and runs smoke test in one step
 ./scripts/deploy_cluster.sh
 
 # Dry-run mode: validates .env and pre-renders only
@@ -717,6 +731,15 @@ ray dashboard cluster.yaml
 ```
 
 See `scripts/deploy_cluster.sh` for the complete automation script.
+
+**Supporting scripts (added in Tier 4, 2026-06-28):**
+
+| Script | Purpose | When to run |
+|--------|---------|-------------|
+| `scripts/create_security_groups.sh` | Creates/updates AWS security groups for the Ray cluster (ingress: 4000/LiteLLM, 22/SSH, intra-SG all traffic). Idempotent. | Before first `ray up` (included in `deploy_cluster.sh`). |
+| `scripts/cache_models.sh` | Downloads model weights from HuggingFace and uploads to S3 — reduces cold start from ~15 min to ~2 min on AWS. | Before `deploy_cluster.sh` (optional, for faster cold starts). |
+| `scripts/smoke_test.sh` | Verifies each configured model responds correctly via `/chat/completions`. Called by `deploy_cluster.sh` after deployment. | After deployment (included in `deploy_cluster.sh`). |
+| `scripts/create_user.sh` | Creates LiteLLM virtual keys scoped to rate-limit tiers (hard/regular/light). | For every new user. |
 
 **Architecture:**
 
@@ -923,6 +946,13 @@ scrape_configs:
                                  # port as the API
         labels:
           layer: gateway
+
+  - job_name: dcgm
+    static_configs:
+      - targets:
+          - "dcgm-exporter:9400"   # NVIDIA GPU metrics via DCGM Exporter (T4.2)
+        labels:
+          layer: gpu
 ```
 
 Key properties:
@@ -1322,6 +1352,7 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 | 2026-06-28 | Phase 5: Updated §16 (added §16.6 ADR.md decision records); created `docs/ADR.md` with 8 ADRs (phases 1-5); updated `LICENSE` (Apache 2.0); added cross-doc consistency tests (TestReadmeDirectoryTree, TestADRValidation); updated §18 footer | Final Documentation — revision + handoff |
 | 2026-06-28 | Audit remediation — 23 fixes: (§5.2 Dockerfile: vLLM pinned 0.5.4); (§5.4 Compose: HF named volume, Grafana password, health checks, memory limits, Prometheus retention, shm override); (§5.6 entrypoint: schema validation, YAML escape, deterministic path, dependency declaration); Config: SEC-01/SEC-04 fixed; Deploy: SEC-02/SEC-10/BUG-04/BUG-05 fixed; AGENTS.md: 6 new Code Quality Axioms; Tests: TestRenderSchemaErrors added + type validation | Audit response (2026-06-28) |
 | 2026-06-28 | Structural audit remediation — 16 findings: (§5.3 serve_config: multi-model via ##LLM_CONFIGS## marker, min_replicas:0); (§5.4 Compose: multi-model env vars); (§5.6 entrypoint: multi-model MODELS_COUNT support); (§7.3 cluster.yaml: idle_timeout_minutes, run_options for HF_TOKEN, vLLM pin 0.5.4); (§7.6 budget protection); (§10.3 dashboards: provisioned vLLM dashboard); Config: rate limiting tiers, multi-model routing; AGENTS.md: multi-model docs; Tests: multi-model render tests (2 new) | Structural audit (2026-06-28) |
+| 2026-06-28 | Tier 4 — VRAM budget, health check, DCGM, scripts, contract tests: (§5.3 serve_config: health_check_period_s/timeout_s); (§5.4 Compose: dcgm-exporter with gpu profile); (§5.5 .env: GPU_COUNT, GPU_VRAM_GB); (§5.6 entrypoint: VRAM budget validation); (§7.3 scripts: create_security_groups.sh, cache_models.sh, smoke_test.sh, create_user.sh, deploy multi-model); (§10.2 prometheus: dcgm scrape target); Tests: contract tests (test_contract.py), VRAM schema tests (4 new), health check assertions; AGENTS.md: contract test category | Tier 4 implementation (2026-06-28) |
 
 ---
 
@@ -1341,4 +1372,4 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 - Kubernetes/AI adoption context (for §7.4): CNCF Annual Cloud Native Survey 2025 (published Jan 2026), https://www.cncf.io/announcements/2026/01/20/kubernetes-established-as-the-de-facto-operating-system-for-ai-as-production-use-hits-82-in-2025-cncf-annual-cloud-native-survey/
 
 ---
-*Document version: 1.7 | Last updated: 2026-06-28 | Sections changed: §5.3 (multi-model ##LLM_CONFIGS## marker, min_replicas:0), §5.4 (multi-model env vars), §5.6 (multi-model entrypoint flow), §7.3 (cluster.yaml — idle_timeout, run_options, vLLM pin), §7.6 (new — budget protection), §10.3 (provisioned dashboards), §16.7 (structural audit entry)*
+*Document version: 1.8 | Last updated: 2026-06-28 | Sections changed: §5.3 (health check config T4.3), §5.4 (dcgm-exporter service T4.2), §5.5 (GPU_COUNT, GPU_VRAM_GB), §5.6 (VRAM budget validation T4.1), §7.3 (new scripts: SG, cache, smoke, create_user, multi-model deploy), §10.2 (dcgm scrape target), §16.7 (Tier 4 entry)*

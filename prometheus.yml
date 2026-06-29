@@ -28,3 +28,10 @@ scrape_configs:
                                  # the /metrics path
         labels:
           layer: gateway
+
+  - job_name: dcgm
+    static_configs:
+      - targets:
+          - "dcgm-exporter:9400"
+        labels:
+          layer: gpu

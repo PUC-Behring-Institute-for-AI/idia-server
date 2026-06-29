@@ -96,7 +96,7 @@ class TestServeConfig:
 
 # ── docker-compose.yml (§5.4, §10.2) ────────────────────────────────────
 
-COMPOSE_REQUIRED_SERVICES = ["ray-head", "litellm"]
+COMPOSE_REQUIRED_SERVICES = ["ray-head", "litellm", "prometheus", "grafana", "dcgm-exporter"]
 
 
 @pytest.mark.config
@@ -275,7 +275,7 @@ class TestClusterYaml:
 PROMETHEUS_REQUIRED_KEYS = ["global", "scrape_configs"]
 
 # Expected scrape target addresses from docker-compose service names
-EXPECTED_TARGETS = ["ray-head:8080", "litellm:4000"]
+EXPECTED_TARGETS = ["ray-head:8080", "litellm:4000", "dcgm-exporter:9400"]
 
 
 @pytest.mark.config

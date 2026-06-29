@@ -179,6 +179,9 @@ class TestRenderConfig:
         assert llm_cfg["model_loading_config"]["model_id"] == "test-model"
         assert llm_cfg["deployment_config"]["autoscaling_config"]["min_replicas"] == 0
         assert llm_cfg["deployment_config"]["autoscaling_config"]["max_replicas"] == 4
+        # Health check fields (T4.3 / STRUCT-14)
+        assert llm_cfg["deployment_config"]["health_check_period_s"] == 30
+        assert llm_cfg["deployment_config"]["health_check_timeout_s"] == 10
 
     def test_multi_model_renders_multiple_entries(self) -> None:
         """Multi-model MODELS_COUNT=N generates N llm_config entries."""
@@ -207,6 +210,7 @@ class TestRenderConfig:
             "MODEL_2_SOURCE": "Qwen/Qwen2.5-14B-Instruct",
             "MODEL_ID": "fallback",
             "MODEL_SOURCE": "org/fallback",
+            "GPU_COUNT": "2",
         }
         rendered = render(template, overrides=overrides)
         # Marker should NOT appear in output
@@ -338,6 +342,38 @@ class TestRenderSchemaErrors:
         with pytest.raises(SystemExit):
             render("model_id: ${MODEL_ID}", overrides=overrides)
 
+    def test_gpu_count_zero_fails(self, scripts_dir: Path) -> None:
+        """GPU_COUNT=0 raises SystemExit."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODEL_ID": "test-model",
+            "MODEL_SOURCE": "test-org/test-model",
+            "GPU_COUNT": "0",
+        }
+        with pytest.raises(SystemExit):
+            render("model_id: ${MODEL_ID}", overrides=overrides)
+
+    def test_gpu_vram_gb_zero_fails(self, scripts_dir: Path) -> None:
+        """GPU_VRAM_GB=0 raises SystemExit."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODEL_ID": "test-model",
+            "MODEL_SOURCE": "test-org/test-model",
+            "GPU_VRAM_GB": "0",
+        }
+        with pytest.raises(SystemExit):
+            render("model_id: ${MODEL_ID}", overrides=overrides)
+
     def test_max_model_len_non_numeric_fails(self, scripts_dir: Path) -> None:
         """MAX_MODEL_LEN=abc raises SystemExit."""
         sys.path.insert(0, str(scripts_dir.parent))
@@ -353,6 +389,74 @@ class TestRenderSchemaErrors:
         }
         with pytest.raises(SystemExit):
             render("model_id: ${MODEL_ID}", overrides=overrides)
+
+    def test_multi_model_vram_budget_exceeds_gpu_count(self, scripts_dir: Path) -> None:
+        """3 models on 1 GPU fails VRAM budget check."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODELS_COUNT": "3",
+            "MODEL_1_ID": "model-a", "MODEL_1_SOURCE": "org/a",
+            "MODEL_2_ID": "model-b", "MODEL_2_SOURCE": "org/b",
+            "MODEL_3_ID": "model-c", "MODEL_3_SOURCE": "org/c",
+            "GPU_COUNT": "1",
+            "GPU_MEMORY_UTILIZATION": "0.9",
+        }
+        template = (
+            "proxy_location: EveryNode\n"
+            "http_options:\n"
+            "  host: 0.0.0.0\n"
+            "  port: 8000\n"
+            "applications:\n"
+            "  - name: llms\n"
+            "    import_path: ray.serve.llm:build_openai_app\n"
+            "    route_prefix: /\n"
+            "    args:\n"
+            "      llm_configs:\n"
+            "        - model_loading_config:\n"
+            "            model_id: ${MODEL_1_ID}\n"
+            "            model_source: ${MODEL_1_SOURCE}\n"
+        )
+        with pytest.raises(SystemExit):
+            render(template, overrides=overrides)
+
+    def test_multi_model_vram_budget_fits_gpu_count(self, scripts_dir: Path) -> None:
+        """2 models on 2 GPUs passes VRAM budget check."""
+        sys.path.insert(0, str(scripts_dir.parent))
+        try:
+            from scripts.render_config import render
+        finally:
+            sys.path.pop(0)
+
+        overrides = {
+            "MODELS_COUNT": "2",
+            "MODEL_1_ID": "model-a", "MODEL_1_SOURCE": "org/a",
+            "MODEL_2_ID": "model-b", "MODEL_2_SOURCE": "org/b",
+            "GPU_COUNT": "2",
+            "GPU_MEMORY_UTILIZATION": "0.9",
+        }
+        # Use a minimal valid template so _validate_yaml passes
+        template = (
+            "proxy_location: EveryNode\n"
+            "http_options:\n"
+            "  host: 0.0.0.0\n"
+            "  port: 8000\n"
+            "applications:\n"
+            "  - name: llms\n"
+            "    import_path: ray.serve.llm:build_openai_app\n"
+            "    route_prefix: /\n"
+            "    args:\n"
+            "      llm_configs:\n"
+            "        - model_loading_config:\n"
+            "            model_id: ${MODEL_1_ID}\n"
+            "            model_source: ${MODEL_1_SOURCE}\n"
+        )
+        # Should pass without SystemExit
+        render(template, overrides=overrides)
 
     def test_model_id_with_yaml_special_chars_escaped(self, scripts_dir: Path) -> None:
         """MODEL_ID with YAML special chars is escaped, not injected."""

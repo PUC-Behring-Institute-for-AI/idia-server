@@ -118,6 +118,19 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
     restart: unless-stopped
 
+  # DCGM Exporter — NVIDIA GPU metrics (utilization, VRAM, temperature).
+  # Uses a profile so it only starts on native Linux (`docker compose --profile gpu up`).
+  # On macOS (no GPU passthrough), omit `--profile gpu` and this service is skipped.
+  # See docs/ARCHITECTURE.md   for details.
+  dcgm-exporter:
+    image: nvcr.io/nvidia/k8s-dcgm-exporter:3.3.7-3.5.0-ubuntu22.04
+    profiles: ["gpu"]
+    deploy:
+      resources:
+        limits:
+          memory: "256m"
+    restart: unless-stopped
+
 volumes:
   prometheus_data:
     name: idia_prometheus_data
