@@ -1,0 +1,428 @@
+#!/usr/bin/env bash
+# =============================================================================
+# IDIA Server — Unified Operations CLI
+# =============================================================================
+#
+# Single entry point for all server operations. The maintainer's interface
+# for deploying, monitoring, and managing the IDIA Server.
+#
+# Usage:
+#   ./idia deploy local [--dry-run]         Start server locally (Docker Compose)
+#   ./idia deploy aws   [--dry-run]         Deploy on AWS (Ray Cluster Launcher)
+#   ./idia status                           Show service health + loaded models
+#   ./idia user create <name> <tier>        Create a user virtual key
+#   ./idia user list                        List all active virtual keys
+#   ./idia logs [service]                   Show service logs (all or specific)
+#   ./idia stop                             Stop all local services
+#   ./idia cache [--dry-run]                Pre-cache models on S3 (AWS)
+#   ./idia --help                           This message
+#
+# Tier levels for user create:
+#   hard      15 RPM / 50k TPM  (researchers, heavy users)
+#   regular    4 RPM / 15k TPM  (graduate students, regular users)
+#   light      1 RPM /  5k TPM  (undergrads, casual users)
+#
+# Examples:
+#   ./idia deploy local                     # Start server (first time: ~15 min)
+#   ./idia deploy local --dry-run           # Validate config without starting
+#   ./idia user create alice hard           # Create key for Alice (researcher)
+#   ./idia user create bob regular          # Create key for Bob (grad student)
+#   ./idia status                           # Check everything is healthy
+#   ./idia logs litellm                     # Debug LiteLLM issues
+#   ./idia stop                             # Shut down server
+#
+# See docs/ARCHITECTURE.md for architecture details.
+# See README.md for the full operations guide.
+# =============================================================================
+
+set -euo pipefail
+
+# ── Paths ───────────────────────────────────────────────────────────────────
+
+REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_DIR="$REPO_DIR/scripts"
+ENV_FILE="$REPO_DIR/.env"
+
+# ── Colours ─────────────────────────────────────────────────────────────────
+
+if [ -t 1 ] && command -v tput &>/dev/null; then
+    BOLD="$(tput bold)"
+    GREEN="$(tput setaf 2)"
+    YELLOW="$(tput setaf 3)"
+    RED="$(tput setaf 1)"
+    CYAN="$(tput setaf 6)"
+    RESET="$(tput sgr0)"
+else
+    BOLD="" GREEN="" YELLOW="" RED="" CYAN="" RESET=""
+fi
+
+# ── Help ────────────────────────────────────────────────────────────────────
+
+_help() {
+    sed -n 's/^# //p; /^# =/d; /^#$/d' "$0" | head -40
+    echo ""
+    echo "${BOLD}Usage:${RESET}"
+    echo "  ./idia <command> [options]"
+    echo ""
+    echo "${BOLD}Commands:${RESET}"
+    echo "  ${CYAN}deploy local${RESET} [--dry-run]    Start server locally via Docker Compose"
+    echo "  ${CYAN}deploy aws${RESET}   [--dry-run]    Deploy on AWS via Ray Cluster Launcher"
+    echo "  ${CYAN}status${RESET}                     Show service health and loaded models"
+    echo "  ${CYAN}user create${RESET} <name> <tier>  Create a LiteLLM virtual key for a user"
+    echo "  ${CYAN}user list${RESET}                  List all active virtual keys"
+    echo "  ${CYAN}logs${RESET} [service]             View logs (all services or one)"
+    echo "  ${CYAN}stop${RESET}                       Stop all local services"
+    echo "  ${CYAN}cache${RESET} [--dry-run]          Pre-cache models on S3 (AWS deployments)"
+    exit 0
+}
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+
+_info()    { echo "${GREEN}[✓]${RESET} $*"; }
+_warn()    { echo "${YELLOW}[⚠]${RESET} $*"; }
+_error()   { echo "${RED}[✗]${RESET} $*" >&2; }
+_step()    { echo "${BOLD}[${1}]${RESET} ${2}"; }
+_banner()  {
+    echo ""
+    echo "${BOLD}${CYAN}══════════════════════════════════════${RESET}"
+    echo "${BOLD}${CYAN}  IDIA Server — ${1}${RESET}"
+    echo "${BOLD}${CYAN}══════════════════════════════════════${RESET}"
+    echo ""
+}
+
+_check_deps() {
+    local missing=()
+    for cmd in docker python3 curl; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
+    done
+    if [ ${#missing[@]} -gt 0 ]; then
+        _error "Required tools not found: ${missing[*]}"
+        echo "  Install the missing tools and try again."
+        exit 1
+    fi
+    if ! docker compose version &>/dev/null; then
+        _error "Docker Compose v2 not found. Install Docker Desktop >= 4.x."
+        exit 1
+    fi
+}
+
+_load_env() {
+    if [ ! -f "$ENV_FILE" ]; then
+        _error ".env file not found at $ENV_FILE"
+        echo "  Run:  cp .env.example .env"
+        echo "  Then edit .env with your HF_TOKEN, LITELLM_MASTER_KEY, and MODEL_ID."
+        exit 1
+    fi
+    set -a
+    # shellcheck source=/dev/null
+    source "$ENV_FILE"
+    set +a
+}
+
+_has_gpu() {
+    command -v nvidia-smi &>/dev/null && nvidia-smi &>/dev/null
+}
+
+_compose_profile_flag() {
+    # Returns --profile gpu if the host has NVIDIA GPUs, empty string otherwise.
+    if _has_gpu; then
+        echo "--profile gpu"
+    else
+        echo ""
+    fi
+}
+
+# ── Wait for server ─────────────────────────────────────────────────────────
+
+_wait_for_health() {
+    local url="$1"
+    local timeout_sec="${2:-600}"
+    local interval=10
+    local elapsed=0
+
+    echo ""
+    _step "4/5" "Waiting for server to be ready..."
+    echo "       URL: $url"
+    echo "       Timeout: ${timeout_sec}s"
+    echo "       ${YELLOW}Note: First boot downloads model weights — this may take 5-15 min${RESET}"
+    echo ""
+
+    while [ "$elapsed" -lt "$timeout_sec" ]; do
+        if curl -sf --max-time 5 "$url" >/dev/null 2>&1; then
+            _info "Server is ready (${elapsed}s elapsed)"
+            return 0
+        fi
+        printf "       . %ds elapsed\r" "$elapsed"
+        sleep "$interval"
+        elapsed=$((elapsed + interval))
+    done
+
+    echo ""
+    _error "Server did not become ready within ${timeout_sec}s"
+    echo "  Check logs with:  ./idia logs"
+    echo "  Common issues:"
+    echo "    - Not enough VRAM for the selected model (check GPU_COUNT, GPU_VRAM_GB)"
+    echo "    - HF_TOKEN not set or invalid (model might be gated)"
+    echo "    - Docker not running"
+    return 1
+}
+
+# ── Deploy local ─────────────────────────────────────────────────────────────
+
+_deploy_local() {
+    local dry_run="${1:-}"
+
+    _banner "Local Deploy"
+    _check_deps
+    _load_env
+
+    # Step 1: Render configs
+    _step "1/5" "Rendering configs (serve_config + litellm_config)..."
+    if ! python3 "$SCRIPTS_DIR/render_config.py" --render-all; then
+        _error "Config rendering failed. Check your .env values."
+        exit 1
+    fi
+    _info "rendered_serve_config.yaml"
+    _info "rendered_litellm_config.yaml"
+
+    if [ "$dry_run" = "--dry-run" ]; then
+        echo ""
+        echo "${BOLD}=== Dry-run mode — Docker Compose not started ===${RESET}"
+        echo "Rendered configs written to repo root. Inspect them before deploying:"
+        echo "  cat $REPO_DIR/rendered_serve_config.yaml"
+        echo "  cat $REPO_DIR/rendered_litellm_config.yaml"
+        echo ""
+        echo "To deploy:  ./idia deploy local"
+        exit 0
+    fi
+
+    # Step 2: Pull images
+    _step "2/5" "Pulling Docker images (skipping build)..."
+    COMPOSE_PROFILE="$(_compose_profile_flag)"
+    # shellcheck disable=SC2086
+    docker compose -f "$REPO_DIR/docker-compose.yml" $COMPOSE_PROFILE pull --quiet litellm prometheus grafana 2>&1 || true
+
+    # Step 3: Start services
+    _step "3/5" "Starting services..."
+    # shellcheck disable=SC2086
+    docker compose -f "$REPO_DIR/docker-compose.yml" $COMPOSE_PROFILE up -d --build
+    _info "Services started"
+
+    # Step 4: Wait for LiteLLM health
+    if ! _wait_for_health "http://localhost:4000/health" 600; then
+        exit 1
+    fi
+
+    # Step 5: Smoke test
+    _step "5/5" "Running smoke test..."
+    if "$SCRIPTS_DIR/smoke_test.sh" --wait; then
+        _info "Smoke test passed"
+    else
+        _warn "Smoke test failed — server may still be loading models"
+        echo "  Retry:  ./scripts/smoke_test.sh --wait"
+    fi
+
+    # Done
+    echo ""
+    _banner "Server Running"
+    echo "  ${BOLD}API endpoint:${RESET}  http://localhost:4000"
+    echo "  ${BOLD}Grafana:${RESET}       http://localhost:3000  (admin / \$GRAFANA_ADMIN_PASSWORD)"
+    echo ""
+    echo "${BOLD}Next steps:${RESET}"
+    echo "  ./idia user create alice hard       # Create a user (researcher tier)"
+    echo "  ./idia user create bob  regular     # Create a user (grad student tier)"
+    echo "  ./idia status                       # Check all services"
+    echo "  ./idia logs                         # View logs"
+    echo ""
+}
+
+# ── Deploy AWS ───────────────────────────────────────────────────────────────
+
+_deploy_aws() {
+    local dry_run="${1:-}"
+
+    _banner "AWS Deploy"
+    _load_env
+
+    if ! command -v ray &>/dev/null; then
+        _error "'ray' CLI not found. Install with:  pip install 'ray[default]'"
+        exit 1
+    fi
+    if ! command -v aws &>/dev/null; then
+        _error "'aws' CLI not found. Install from https://aws.amazon.com/cli/"
+        exit 1
+    fi
+
+    if [ "$dry_run" = "--dry-run" ]; then
+        "$SCRIPTS_DIR/deploy_cluster.sh" --dry-run
+    else
+        "$SCRIPTS_DIR/deploy_cluster.sh"
+    fi
+}
+
+# ── Status ───────────────────────────────────────────────────────────────────
+
+_status() {
+    _banner "Status"
+    _load_env
+
+    echo "${BOLD}Services:${RESET}"
+    docker compose -f "$REPO_DIR/docker-compose.yml" ps 2>/dev/null || \
+        _warn "Could not reach Docker — is the server running?"
+    echo ""
+
+    echo "${BOLD}LiteLLM health:${RESET}"
+    local health_resp
+    health_resp=$(curl -sf --max-time 5 "http://localhost:4000/health" 2>/dev/null || echo "UNREACHABLE")
+    if [ "$health_resp" = "UNREACHABLE" ]; then
+        _warn "LiteLLM not reachable at http://localhost:4000 — is the server running?"
+    else
+        _info "LiteLLM is healthy"
+    fi
+    echo ""
+
+    echo "${BOLD}Loaded models:${RESET}"
+    local models_resp
+    models_resp=$(curl -sf --max-time 5 \
+        -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}" \
+        "http://localhost:4000/v1/models" 2>/dev/null || echo "")
+    if [ -z "$models_resp" ]; then
+        _warn "Could not fetch model list (server may still be loading)"
+    else
+        if command -v jq &>/dev/null; then
+            echo "$models_resp" | jq -r '.data[].id' 2>/dev/null | \
+                sed 's/^/  • /' || echo "  (jq parse error)"
+        else
+            echo "$models_resp"
+        fi
+    fi
+    echo ""
+
+    if _has_gpu; then
+        echo "${BOLD}GPU status:${RESET}"
+        nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu \
+            --format=csv,noheader 2>/dev/null | \
+            awk -F',' '{printf "  GPU: %s | VRAM: %s / %s | Util: %s\n", $1, $2, $3, $4}' || \
+            _warn "nvidia-smi unavailable"
+        echo ""
+    fi
+}
+
+# ── User management ──────────────────────────────────────────────────────────
+
+_user_create() {
+    local name="${1:-}"
+    local tier="${2:-regular}"
+    local endpoint="${3:-http://localhost:4000}"
+
+    if [ -z "$name" ]; then
+        _error "Usage: ./idia user create <name> <tier> [endpoint]"
+        echo "  tier options: hard | regular | light"
+        exit 1
+    fi
+
+    _load_env
+    "$SCRIPTS_DIR/create_user.sh" "$name" "$tier" "$endpoint"
+}
+
+_user_list() {
+    local endpoint="${1:-http://localhost:4000}"
+    _load_env
+
+    echo "${BOLD}Active virtual keys:${RESET}"
+    local resp
+    resp=$(curl -sf --max-time 10 \
+        -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}" \
+        "${endpoint}/key/info" 2>/dev/null || echo "")
+
+    if [ -z "$resp" ]; then
+        _warn "Could not fetch key list — is the server running?"
+        exit 1
+    fi
+
+    if command -v jq &>/dev/null; then
+        echo "$resp" | jq -r '
+            .info // [] |
+            .[] |
+            "  \(.key_alias // "unnamed") (\(.team_id // "no-team")) — expires: \(.expires // "never")"
+        ' 2>/dev/null || echo "$resp"
+    else
+        echo "$resp"
+    fi
+}
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+
+_logs() {
+    local service="${1:-}"
+    if [ -n "$service" ]; then
+        docker compose -f "$REPO_DIR/docker-compose.yml" logs -f "$service"
+    else
+        docker compose -f "$REPO_DIR/docker-compose.yml" logs -f
+    fi
+}
+
+# ── Stop ─────────────────────────────────────────────────────────────────────
+
+_stop() {
+    _banner "Stopping Server"
+    docker compose -f "$REPO_DIR/docker-compose.yml" down
+    _info "All services stopped"
+    echo ""
+    echo "Model weights and Prometheus data are preserved in Docker volumes."
+    echo "To remove volumes too:  docker compose down -v"
+}
+
+# ── Cache ────────────────────────────────────────────────────────────────────
+
+_cache() {
+    _load_env
+    "$SCRIPTS_DIR/cache_models.sh" "$@"
+}
+
+# ── Router ───────────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+    deploy)
+        case "${2:-}" in
+            local) _deploy_local "${3:-}" ;;
+            aws)   _deploy_aws   "${3:-}" ;;
+            *)
+                _error "Unknown deploy target: '${2:-}'"
+                echo "  Use:  ./idia deploy local"
+                echo "  Or:   ./idia deploy aws"
+                exit 1
+                ;;
+        esac
+        ;;
+    status)        _status ;;
+    user)
+        case "${2:-}" in
+            create) _user_create "${3:-}" "${4:-regular}" "${5:-}" ;;
+            list)   _user_list   "${3:-}" ;;
+            *)
+                _error "Unknown user subcommand: '${2:-}'"
+                echo "  Use:  ./idia user create <name> <tier>"
+                echo "  Or:   ./idia user list"
+                exit 1
+                ;;
+        esac
+        ;;
+    logs)          _logs  "${2:-}" ;;
+    stop)          _stop ;;
+    cache)         _cache "${@:2}" ;;
+    --help|-h|help) _help ;;
+    "")
+        echo "${BOLD}IDIA Server CLI${RESET} — run ${CYAN}./idia --help${RESET} for usage"
+        echo ""
+        echo "Quick start:"
+        echo "  ${CYAN}./idia deploy local${RESET}   # Start the server"
+        echo "  ${CYAN}./idia status${RESET}         # Check health"
+        echo "  ${CYAN}./idia user create alice hard${RESET}  # Add a user"
+        ;;
+    *)
+        _error "Unknown command: '${1}'"
+        echo "  Run:  ./idia --help"
+        exit 1
+        ;;
+esac

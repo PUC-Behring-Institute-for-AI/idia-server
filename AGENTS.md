@@ -2,8 +2,8 @@
 # Location: /Users/anaxsouza/Documents/Github/idia-server/AGENTS.md
 # Inherits: ~/.config/opencode/AGENTS.md (global rules)
 # Requires: global >= 2.0
-# Version: 1.1
-# Last updated: 2026-06-28
+# Version: 1.2
+# Last updated: 2026-06-29
 
 ## Project
 
@@ -33,22 +33,23 @@ Referência arquitetural completa: `docs/ARCHITECTURE.md`
 
 ```
 idia-server/
+├── idia                   ← CLI unificada — único ponto de entrada para o mantenedor
 ├── AGENTS.md              ← este arquivo — regras do projeto para agentes OpenCode
 ├── .gitignore
 ├── pyproject.toml         ← configuração pytest, ruff
 ├── .env.example           ← template de secrets (Phase 2 ✓)
 ├── Dockerfile.ray         ← imagem Ray Serve LLM (Phase 2 ✓)
 ├── docker-compose.yml     ← orquestração local / single-EC2 (Phase 2 ✓)
-├── serve_config.yaml      ← config do Ray Serve (Phase 2 ✓)
-├── config.yaml            ← roteamento LiteLLM (Phase 2 ✓)
+├── serve_config.yaml      ← config do Ray Serve — template ${VAR} (Phase 2 ✓)
+├── config.yaml            ← config LiteLLM — template ${VAR} (Phase 2 ✓)
 ├── cluster.yaml           ← definição do cluster AWS (Phase 3 ✓)
 ├── prometheus.yml         ← monitoring scrape config (Phase 4 ✓)
 ├── scripts/               ← utilitários (entrypoint, helpers)
-│   ├── render_config.py   ← entrypoint Python — substitui placeholders env var (Phase 2 ✓)
+│   ├── render_config.py   ← renderiza serve_config + litellm_config (Phase 2 ✓)
 │   ├── deploy_cluster.sh  ← deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
 │   ├── create_security_groups.sh  ← AWS security group creator (Tier 4 ✓)
 │   ├── cache_models.sh    ← Model cache S3 sync (Tier 4 ✓)
-│   ├── smoke_test.sh      ← Post-deploy smoke test (Tier 4 ✓)
+│   ├── smoke_test.sh      ← Post-deploy smoke test com --wait (Tier 4 ✓)
 │   └── create_user.sh     ← LiteLLM virtual key creator (Tier 4 ✓)
 ├── grafana/               ← dashboards e datasources (Phase 4 ✓)
 │   ├── datasources/       ← provisioning do datasource Prometheus
@@ -61,12 +62,13 @@ idia-server/
 │   ├── conftest.py        ← fixtures compartilhadas
 │   ├── test_docs.py       ← testes de estrutura de documentação
 │   ├── test_config_schemas.py  ← testes de schema de configs
-│   ├── test_integration.py ← testes de integração simulados (render_config, Compose, multi-model) (Phase 2 ✓)
-│   └── test_security.py   ← testes de segurança (portas, pinning, boundaries) (Phase 2 ✓)
+│   ├── test_integration.py ← render_config (serve + litellm), multi-model, VRAM (Phase 2 ✓)
+│   ├── test_security.py   ← portas, pinning, fronteiras de confiança (Phase 2 ✓)
+│   └── test_contract.py   ← contratos REST LiteLLM sem GPU (Tier 4 ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
 │   ├── ADR.md             ← Architecture Decision Records (Phase 5 ✓)
-│   ├── audit_logs/        ← relatórios de auditoria vettados
+│   ├── audit_logs/        ← relatórios de auditoria vetados
 │   │   ├── 2026-06-28_audit_vettato.md
 │   │   └── 2026-06-28_audit_structural_vettato.md
 │   └── ...                ← futuros: GLOSSARY.md conforme necessário

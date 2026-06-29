@@ -46,6 +46,11 @@ available_node_types:
     # Never holds model weights — a GPU here would be wasted (§7.3).
     node_config:
       InstanceType: m5.large
+      # Security group created by scripts/create_security_groups.sh.
+      # Set SG_ID env var before running deploy_cluster.sh, or the default
+      # VPC security group is used (less restrictive).
+      SecurityGroupIds:
+        - "${SG_ID:-default}"
     resources:
       CPU: 2
 
@@ -63,6 +68,8 @@ available_node_types:
           Ebs:
             VolumeSize: 100        # GB — model weights + HuggingFace cache
             VolumeType: gp3
+      SecurityGroupIds:
+        - "${SG_ID:-default}"
     resources: {}                   # Ray auto-detects the NVIDIA GPU
 
 head_node_type: head_node
@@ -75,6 +82,19 @@ file_mounts:
 # Commands run on the head node inside the Docker container.
 head_setup_commands:
   - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
+
+# (Optional) Pre-sync model weights from S3 to reduce GPU worker cold start
+# from ~15 minutes (HuggingFace download) to ~2 minutes (S3 transfer).
+# To enable:
+#   1. Run:  ./idia cache              # downloads + uploads to s3://idia-models-cache-<account>
+#   2. Uncomment the lines below and set S3_BUCKET:
+#
+# worker_setup_commands:
+#   - aws s3 sync s3://<your-bucket>/hf-cache/ /root/.cache/huggingface/ --quiet
+#
+# head_setup_commands should also include the sync for the head node render step:
+#   - aws s3 sync s3://<your-bucket>/hf-cache/ /root/.cache/huggingface/ --quiet
+#   - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
 
 # Commands to start Ray on the head node.
 # --dashboard-host=127.0.0.1 is MANDATORY for security (§9.2).

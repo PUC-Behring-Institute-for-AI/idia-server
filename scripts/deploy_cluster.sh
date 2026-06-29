@@ -65,16 +65,35 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 # ── Ensure security group exists (AWS only) ──────────────────────────────────
-# Idempotent — safe to re-run. Skips if SG_NAME is empty.
+# Idempotent — safe to re-run. Creates idia-server-sg if it doesn't exist,
+# then exports SG_ID for cluster.yaml substitution.
 SG_NAME="${SG_NAME:-idia-server-sg}"
 if [ -n "$SG_NAME" ] && [ -x "$SCRIPT_DIR/create_security_groups.sh" ]; then
     echo ""
     echo "[Pre] Ensuring security group '$SG_NAME'..."
-    "$SCRIPT_DIR/create_security_groups.sh" 2>&1 || true
+    SG_OUTPUT=$("$SCRIPT_DIR/create_security_groups.sh" 2>&1 || true)
+    echo "$SG_OUTPUT"
+    # Extract SG_ID from output if printed by create_security_groups.sh
+    EXTRACTED_SG_ID=$(echo "$SG_OUTPUT" | grep -oE 'sg-[a-f0-9]+' | head -1 || true)
+    if [ -n "$EXTRACTED_SG_ID" ]; then
+        export SG_ID="$EXTRACTED_SG_ID"
+        echo "  ✓ SG_ID=$SG_ID"
+    fi
 fi
 
-# ── Placeholder patterns rejected as unsafe ──────────────────────────────────
-PLACEHOLDER_PATTERNS="^(placeholder|change-me|hf_xxx|your-.*|TODO|FIXME)$"
+# ── Placeholder detection — exact known placeholder values ───────────────────
+# These are the verbatim placeholder strings from .env.example.
+# Match is EXACT (not substring) to avoid false positives on values
+# like "my-secret-key-v2" that happen to contain "change-me".
+_is_placeholder() {
+    local val="$1"
+    case "$val" in
+        hf_xxx|sk-litellm-admin-change-me|changeme|your-key-here|TODO|FIXME|placeholder)
+            return 0 ;;  # is a placeholder
+        *)
+            return 1 ;;  # not a placeholder
+    esac
+}
 
 # ── Load .env ───────────────────────────────────────────────────────────────
 
@@ -101,7 +120,7 @@ for var in "${REQUIRED_VARS[@]}"; do
         echo "ERROR: Required variable '$var' is not set in .env"
         exit 1
     fi
-    if echo "$val" | grep -qiE "$PLACEHOLDER_PATTERNS"; then
+    if _is_placeholder "$val"; then
         echo "ERROR: '$var' appears to be a placeholder value: '$val'"
         echo "       Edit .env and replace it with a real value."
         exit 1
@@ -196,10 +215,28 @@ echo "Dashboard (SSH tunnel):"
 echo "  ray dashboard $CLUSTER_FILE"
 echo ""
 echo "API endpoint (via head node public IP):"
-echo "  curl -X POST http://<head-public-ip>:4000/chat/completions \\"
-echo "    -H \"Authorization: Bearer \$LITELLM_MASTER_KEY\" \\"
-echo "    -H \"Content-Type: application/json\" \\"
-printf '    -d '"'"'{"model":"%s","messages":[{"role":"user","content":"ping"}]}'\''\n' "$MODEL_ID"
+if [ "$MULTI_MODEL" = true ]; then
+    # Multi-model: list all model IDs
+    echo "  Available models:"
+    for n in $(seq 1 "$MODELS_COUNT"); do
+        mid_var="MODEL_${n}_ID"
+        mid="${!mid_var:-}"
+        [ -n "$mid" ] && echo "    • $mid"
+    done
+    echo ""
+    echo "  Example (replace <model> and <head-ip>):"
+    FIRST_MODEL_VAR="MODEL_1_ID"
+    FIRST_MODEL="${!FIRST_MODEL_VAR:-llama-3.1-8b}"
+    echo "  curl -X POST http://<head-public-ip>:4000/chat/completions \\"
+    echo "    -H \"Authorization: Bearer \$LITELLM_MASTER_KEY\" \\"
+    echo "    -H \"Content-Type: application/json\" \\"
+    printf '    -d '"'"'{"model":"%s","messages":[{"role":"user","content":"ping"}]}'"'"'\n' "$FIRST_MODEL"
+else
+    echo "  curl -X POST http://<head-public-ip>:4000/chat/completions \\"
+    echo "    -H \"Authorization: Bearer \$LITELLM_MASTER_KEY\" \\"
+    echo "    -H \"Content-Type: application/json\" \\"
+    printf '    -d '"'"'{"model":"%s","messages":[{"role":"user","content":"ping"}]}'"'"'\n' "${MODEL_ID:-llama-3.1-8b}"
+fi
 echo ""
 echo "To scale down to zero workers:"
 echo "  ray down -y $CLUSTER_FILE"

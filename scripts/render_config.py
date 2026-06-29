@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render serve_config.yaml with env var substitution and launch Ray Serve.
+"""Render serve_config.yaml + config.yaml with env var substitution.
 
 Usage (via Dockerfile CMD):
     python3 /app/render_config.py
@@ -9,6 +9,12 @@ Workflow:
     2. Substitute each placeholder from the corresponding environment variable.
     3. Write the rendered YAML to a fixed path (/tmp/idia_serve_config.yaml).
     4. exec serve run on the rendered file (replaces this process).
+
+Flags:
+    --dry-run       Render serve_config only to stdout. No files written.
+                    Used by deploy_cluster.sh to pre-render for cluster upload.
+    --render-all    Render BOTH serve_config and litellm_config to repo root.
+                    Used by ``./idia deploy local`` before ``docker compose up``.
 
 Required env vars:
     MODEL_ID          — Short model alias (e.g. "llama-3.1-8b")
@@ -72,6 +78,11 @@ MODEL_CONFIG_TEMPLATE = """        - model_loading_config:
               target_ongoing_requests: 64"""
 
 LLM_CONFIGS_MARKER = "##LLM_CONFIGS##"
+
+# Output filename for the rendered LiteLLM config (written to repo root by --render-all)
+LITELLM_RENDERED_FILENAME = "rendered_litellm_config.yaml"
+# LiteLLM env-var reference syntax — keeps secrets out of rendered files on disk
+_LITELLM_MASTER_KEY_REF = "os.environ/LITELLM_MASTER_KEY"
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -453,11 +464,105 @@ def _log_diagnostics(env: dict[str, str]) -> None:
 # ── Public API (for unit tests) ─────────────────────────────────────────────
 
 
+def _render_litellm_config(env: dict[str, str]) -> str:
+    """Generate a rendered LiteLLM config.yaml with real model names.
+
+    LiteLLM does NOT perform shell-style ${VAR} substitution in its config
+    file at runtime — that syntax is interpreted literally, causing every
+    request to fail with "model not found".  This function produces a fully
+    resolved YAML config where all model names are concrete strings.
+
+    The master_key is kept as ``os.environ/LITELLM_MASTER_KEY`` (LiteLLM's
+    native env-var reference syntax) so that no secrets ever appear in the
+    rendered file on disk.
+
+    Returns a valid YAML string ready for LiteLLM to consume.
+    """
+    mc_str = env.get("MODELS_COUNT", "0")
+    try:
+        models_count = int(mc_str) if mc_str else 0
+    except ValueError:
+        models_count = 0
+
+    model_list: list[dict] = []
+
+    if models_count > 0:
+        # Multi-model mode — one entry per MODEL_N_ID
+        for n in range(1, models_count + 1):
+            model_id = env.get(f"MODEL_{n}_ID", "").strip()
+            if not model_id:
+                continue
+            model_list.append({
+                "model_name": model_id,
+                "litellm_params": {
+                    "model": f"openai/{model_id}",
+                    "api_base": "http://ray-head:8000/v1",
+                    "api_key": "no-auth-internal",
+                },
+            })
+    else:
+        # Single-model mode — use MODEL_ID
+        model_id = env.get("MODEL_ID", "").strip()
+        if model_id:
+            model_list.append({
+                "model_name": model_id,
+                "litellm_params": {
+                    "model": f"openai/{model_id}",
+                    "api_base": "http://ray-head:8000/v1",
+                    "api_key": "no-auth-internal",
+                },
+            })
+
+    config: dict = {
+        "model_list": model_list,
+        "general_settings": {
+            # master_key as LiteLLM env-var reference — resolved at container startup.
+            # Never substitute the real value here: this file is written to disk.
+            "master_key": _LITELLM_MASTER_KEY_REF,
+            "max_parallel_requests": 20,
+        },
+        "litellm_settings": {
+            "default_team_settings": [
+                {"team_alias": "hard",    "rpm_limit": 15, "tpm_limit": 50_000},
+                {"team_alias": "regular", "rpm_limit": 4,  "tpm_limit": 15_000},
+                {"team_alias": "light",   "rpm_limit": 1,  "tpm_limit":  5_000},
+            ],
+        },
+    }
+
+    return yaml.dump(config, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+
+def _write_rendered_files(
+    rendered_serve: str,
+    rendered_litellm: str,
+    repo_root: "Path",
+) -> tuple["Path", "Path"]:
+    """Write both rendered configs to *repo_root*.
+
+    Returns (serve_path, litellm_path).
+    Raises SystemExit on I/O failure.
+    """
+    serve_out = repo_root / "rendered_serve_config.yaml"
+    litellm_out = repo_root / LITELLM_RENDERED_FILENAME
+    try:
+        serve_out.write_text(rendered_serve, encoding="utf-8")
+        litellm_out.write_text(rendered_litellm, encoding="utf-8")
+    except OSError as exc:
+        print(
+            f"FATAL: Could not write rendered configs to {repo_root}: {exc}\n"
+            f"  Check that the directory exists and is writable.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    return serve_out, litellm_out
+
+
 def render(
     template: str,
     overrides: dict[str, str] | None = None,
 ) -> str:
-    """Render a template string with env vars, returning YAML string.
+    """Render a serve_config template string with env vars, returning YAML string.
 
     Pure function — no IO. Used for unit tests.
     """
@@ -470,6 +575,21 @@ def render(
     rendered = _substitute(template, env)
     _validate_yaml(rendered)
     return rendered
+
+
+def render_litellm_config(
+    overrides: dict[str, str] | None = None,
+) -> str:
+    """Render LiteLLM config from env + optional overrides.
+
+    Pure function — no IO. Used for unit tests.
+    """
+    env = dict(os.environ)
+    if overrides:
+        env.update(overrides)
+    _apply_defaults(env)
+    _validate_schema_values(env)
+    return _render_litellm_config(env)
 
 
 def render_file(template_path: str | Path) -> tuple[str, dict[str, str]]:
@@ -487,26 +607,47 @@ def render_file(template_path: str | Path) -> tuple[str, dict[str, str]]:
 
 
 def main() -> None:
-    """Entry point for the Docker CMD.
+    """Entry point for the Docker CMD and CLI operations.
 
-    Steps:
+    Steps (normal mode — Docker CMD):
         1. Locate and read template.
         2. Collect environment.
         3. Substitute and validate.
         4. Write rendered output to deterministic path.
         5. exec serve run.
+
+    Flags:
+        --dry-run      Render serve_config to stdout only. No files written,
+                       no Ray Serve launched. Used by deploy_cluster.sh.
+        --render-all   Render BOTH configs (serve + litellm) to repo root.
+                       Used by ./idia deploy local before docker compose up.
     """
-    # --dry-run flag for testing
+    caller_dir = Path(__file__).resolve().parent
+    repo_root = caller_dir.parent  # scripts/../ = repo root
+
+    # ── --render-all: write both configs to repo root, then exit ──────────
+    if "--render-all" in sys.argv:
+        env = _collect_env()
+        raw = _read_file(_find_template(caller_dir))
+        rendered_serve = _substitute(raw, env)
+        _validate_yaml(rendered_serve)
+        rendered_litellm = _render_litellm_config(env)
+        serve_out, litellm_out = _write_rendered_files(rendered_serve, rendered_litellm, repo_root)
+        _log_diagnostics(env)
+        print(f"  serve config  → {serve_out}", file=sys.stderr)
+        print(f"  litellm config → {litellm_out}", file=sys.stderr)
+        return
+
+    # ── --dry-run: render serve_config to stdout only (used by deploy_cluster.sh) ──
     if "--dry-run" in sys.argv:
         env = _collect_env()
-        caller_dir = Path(__file__).resolve().parent
         raw = _read_file(_find_template(caller_dir))
         rendered = _substitute(raw, env)
         _validate_yaml(rendered)
         print(rendered)
         return
 
-    caller_dir = Path(__file__).resolve().parent
+    # ── Normal mode: render + write + exec serve run (Docker CMD) ─────────
     template_path = _find_template(caller_dir)
     raw = _read_file(template_path)
     env = _collect_env()

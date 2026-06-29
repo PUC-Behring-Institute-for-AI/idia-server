@@ -74,7 +74,7 @@ if [ $# -gt 0 ]; then
 else
     # From .env — handle both single and multi-model modes
     MODELS_COUNT="${MODELS_COUNT:-0}"
-    if [ "$MODELS_COUNT" -gt 0 ]; 2>/dev/null; then
+    if [ "$MODELS_COUNT" -gt 0 ] 2>/dev/null; then
         for n in $(seq 1 "$MODELS_COUNT"); do
             src_var="MODEL_${n}_SOURCE"
             src="${!src_var:-}"

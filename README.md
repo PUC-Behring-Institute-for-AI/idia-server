@@ -4,7 +4,7 @@
 e carregamento sob demanda de modelos, implantável de forma idêntica em um host
 local multi-GPU e na AWS.**
 
-[![Phase](https://img.shields.io/badge/phase-4%20Monitoring-blue)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
+[![Phase](https://img.shields.io/badge/phase-5%20Complete-brightgreen)](https://github.com/PUC-Behring-Institute-for-AI/idia-server)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://python.org)
 [![Stack](https://img.shields.io/badge/stack-Ray%20Serve%20%7C%20vLLM%20%7C%20LiteLLM-orange)]()
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -22,9 +22,11 @@ local multi-GPU e na AWS.**
 - [9. Segurança](#9-segurança)
 - [10. Targets de Deploy](#10-targets-de-deploy)
 - [11. Monitoramento](#11-monitoramento)
-- [12. Mantenedor](#12-mantenedor)
-- [13. Licença](#13-licença)
-- [14. Referências](#14-referências)
+- [12. Gerenciamento de Usuários](#12-gerenciamento-de-usuários)
+- [13. Multi-Model](#13-multi-model)
+- [14. Mantenedor](#14-mantenedor)
+- [15. Licença](#15-licença)
+- [16. Referências](#16-referências)
 
 ---
 
@@ -176,56 +178,72 @@ completo em [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## 4. Início Rápido
 
-> **Nota:** Este fluxo será funcional apenas após a conclusão da Phase 2
-> (Build Core), que criará os artefatos de infraestrutura. Abaixo está a
-> documentação antecipada do fluxo completo para referência.
+> O IDIA Server usa uma CLI unificada (`./idia`) como ponto de entrada único.
+> Não use `docker compose up` diretamente — a CLI garante que os configs sejam
+> renderizados antes de subir os containers.
 
-### 4.1 Preparação
+### 4.1 Preparação (uma vez)
 
 ```bash
 # 1. Clonar o repositório
 git clone https://github.com/PUC-Behring-Institute-for-AI/idia-server.git
 cd idia-server
 
-# 2. Criar arquivo de secrets (NUNCA versionar este arquivo)
-cat > .env << 'EOF'
-HF_TOKEN=hf_seu_token_aqui
-LITELLM_MASTER_KEY=sk-litellm-admin-change-me
-MODEL_ID=llama-3.1-8b
-MODEL_SOURCE=meta-llama/Llama-3.1-8B-Instruct
-EOF
-
-# 3. Verificar GPU disponível
-nvidia-smi
-
-# 4. Subir a stack
-docker compose up -d
+# 2. Criar arquivo de configuração
+cp .env.example .env
+# Editar .env com os seus valores:
+#   HF_TOKEN         — token HuggingFace (https://huggingface.co/settings/tokens)
+#   LITELLM_MASTER_KEY — chave admin (ex: sk-admin-minha-chave-secreta)
+#   MODEL_ID         — alias curto (ex: llama-3.1-8b)
+#   MODEL_SOURCE     — repositório HF (ex: meta-llama/Llama-3.1-8B-Instruct)
+#   GRAFANA_ADMIN_PASSWORD — senha do Grafana
+vim .env
 ```
 
-### 4.2 Verificação
+### 4.2 Subir o servidor (um comando)
 
 ```bash
-# Acompanhar o carregamento do modelo (primeira vez baixa os pesos)
-docker compose logs -f ray-head
-
-# Verificar se o Ray enxerga todas as GPUs do host
-docker compose exec ray-head ray status
-
-# Teste end-to-end através da stack completa
-curl -X POST http://localhost:4000/chat/completions \
-  -H "Authorization: Bearer $(grep LITELLM_MASTER_KEY .env | cut -d= -f2)" \
-  -H "Content-Type: application/json" \
-  -d '{"model":"llama-3.1-8b","messages":[{"role":"user","content":"Explique PagedAttention em uma frase."}]}'
+./idia deploy local
 ```
 
-### 4.3 Consumo programático
+O que acontece automaticamente:
+1. **Valida** o `.env` (detecta placeholders não substituídos)
+2. **Renderiza** `rendered_serve_config.yaml` e `rendered_litellm_config.yaml`
+3. **Inicia** os containers (`docker compose up -d`)
+4. **Aguarda** o servidor ficar pronto (timeout: 10 min — cold start baixa os pesos)
+5. **Executa** smoke test nos modelos configurados
+
+> **Primeiro boot:** a primeira vez que o servidor sobe, os pesos do modelo são
+> baixados do HuggingFace (~15 min para um modelo 8B). As execuções seguintes
+> usam o cache Docker volume `idia_hf_cache` e sobem em ~1 min.
+
+### 4.3 Criar usuários
+
+```bash
+# Criar chave para uma pesquisadora (15 RPM / 50k TPM)
+./idia user create alice hard
+
+# Criar chave para um mestrando (4 RPM / 15k TPM)
+./idia user create bob regular
+
+# Criar chave para aluno de graduação (1 RPM / 5k TPM)
+./idia user create carol light
+```
+
+### 4.4 Verificar saúde do sistema
+
+```bash
+./idia status
+```
+
+### 4.5 Uso programático (OpenAI-compatible)
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
     base_url="http://localhost:4000",
-    api_key="sk-12...",  # chave virtual gerada via /key/generate
+    api_key="sk-...",   # chave virtual criada com ./idia user create
 )
 
 response = client.chat.completions.create(
@@ -238,46 +256,67 @@ for chunk in response:
     print(chunk.choices[0].delta.content or "", end="")
 ```
 
+### 4.6 Referência rápida da CLI
+
+```
+./idia deploy local [--dry-run]   Subir servidor local
+./idia deploy aws   [--dry-run]   Deploy na AWS
+./idia status                     Saúde dos serviços + modelos carregados
+./idia user create <nome> <tier>  Criar chave virtual (hard/regular/light)
+./idia user list                  Listar chaves ativas
+./idia logs [serviço]             Ver logs
+./idia stop                       Parar servidor
+./idia cache                      Pré-cachear modelos no S3 (AWS)
+./idia --help                     Ajuda completa
+```
+
 ---
 
 ## 5. Estrutura do Repositório
 
 ```
 idia-server/
+├── idia                   ← CLI unificada — único ponto de entrada (✓)
 ├── AGENTS.md              ← Regras do projeto para agentes OpenCode (Phase 1 ✓)
-├── .gitignore             ← Exclusões para versionamento (Phase 1 ✓)
+├── .gitignore             ← Inclui rendered_*.yaml (gerados, não versionados)
 ├── pyproject.toml         ← Configuração pytest + ruff (Phase 1 ✓)
 ├── .env.example           ← Template de secrets (Phase 2 ✓)
 ├── Dockerfile.ray         ← Imagem Ray Serve LLM (Phase 2 ✓)
-├── serve_config.yaml      ← Configuração Ray Serve (Phase 2 ✓)
-├── docker-compose.yml     ← Orquestração local / single-EC2 (Phase 2 ✓)
-├── config.yaml            ← Roteamento LiteLLM (Phase 2 ✓)
+├── serve_config.yaml      ← Template Ray Serve com ${VAR} placeholders (Phase 2 ✓)
+├── config.yaml            ← Template LiteLLM com ${VAR} placeholders (Phase 2 ✓)
+├── docker-compose.yml     ← Orquestração local (Phase 2 ✓)
 ├── cluster.yaml           ← Definição do cluster AWS (Phase 3 ✓)
-├── prometheus.yml         ← Configuração de monitoramento (Phase 4 ✓)
-├── scripts/               ← Utilitários (entrypoints, helpers)
-│   ├── render_config.py   ← Entrypoint Python — substitui placeholders env var (Phase 2 ✓)
-│   └── deploy_cluster.sh  ← Deploy automatizado AWS via Ray Cluster Launcher (Phase 3 ✓)
-├── grafana/               ← Dashboards e datasources (Phase 4 ✓)
-├── tests/                 ← Suíte de testes (Phase 1 ✓)
-│   ├── __init__.py
-│   ├── conftest.py        ← Fixtures compartilhadas
-│   ├── test_docs.py       ← Testes de estrutura de documentação
-│   ├── test_config_schemas.py  ← Testes de schema YAML
-│   ├── test_integration.py     ← Testes de integração simulada (Phase 2 ✓)
-│   └── test_security.py        ← Testes de segurança (Phase 2 ✓, Phase 3 ✓)
+├── prometheus.yml         ← Configuração de scrape (Phase 4 ✓)
+├── scripts/
+│   ├── render_config.py   ← Renderiza serve_config + litellm_config (Phase 2 ✓)
+│   ├── deploy_cluster.sh  ← Deploy AWS via Ray Cluster Launcher (Phase 3 ✓)
+│   ├── create_security_groups.sh ← IaC para security groups AWS (Tier 4 ✓)
+│   ├── cache_models.sh    ← Cache de modelos no S3 — reduz cold start (Tier 4 ✓)
+│   ├── smoke_test.sh      ← Smoke test pós-deploy com --wait (Tier 4 ✓)
+│   └── create_user.sh     ← Criação de chaves virtuais LiteLLM (Tier 4 ✓)
+├── grafana/
+│   ├── datasources/datasource.yml   ← Provisioning automático do Prometheus
+│   └── dashboards/
+│       ├── dashboard.yml            ← Provider config
+│       └── vllm-dashboard.json      ← Dashboard oficial vLLM (ID 25043)
+├── tests/
+│   ├── conftest.py             ← Fixtures compartilhadas
+│   ├── test_docs.py            ← Estrutura de documentação (docs marker)
+│   ├── test_config_schemas.py  ← Schema YAML de todos os configs (config marker)
+│   ├── test_integration.py     ← render_config, multi-model, litellm render (integration)
+│   ├── test_security.py        ← Portas, pinning, fronteiras de confiança (security)
+│   └── test_contract.py        ← Contratos REST LiteLLM sem GPU (integration)
 ├── docs/
-│   ├── ARCHITECTURE.md    ← Documento vivo de arquitetura (Phase 1 ✓)
-│   └── ...                ← Futuros: ADR.md, GLOSSARY.md conforme necessário
-└── README.md              ← Este arquivo (Phase 1 ✓)
+│   ├── ARCHITECTURE.md         ← Documento vivo (~1200 linhas)
+│   ├── ADR.md                  ← Architecture Decision Records
+│   └── audit_logs/             ← Relatórios de auditoria vetados
+└── README.md                   ← Este arquivo
 ```
 
-### Legenda dos marcadores
-
-| Marcador | Significado |
-|----------|-------------|
-| ✓ | Criado e finalizado |
-| ⏳ | A ser criado na fase indicada |
-| (Phase N) | Fase de implementação responsável |
+> **Arquivos gerados (não versionados):**
+> `rendered_serve_config.yaml` e `rendered_litellm_config.yaml` são gerados
+> por `./idia deploy local` antes de `docker compose up`. Eles estão no
+> `.gitignore` — nunca commitar.
 
 ---
 
@@ -286,13 +325,13 @@ idia-server/
 O projeto está sendo desenvolvido em 5 fases incrementais, cada uma com revisão
 humana antes de avançar para a próxima.
 
-| Fase | Nome | Status | Entregáveis | Depende de |
-|------|------|--------|-------------|------------|
-| **1** | Fundação + AGENTS.md | ✅ **Concluída** | `AGENTS.md`, `.gitignore`, `pyproject.toml`, `tests/`, `docs/ARCHITECTURE.md` atualizado, `README.md` | — |
-| **2** | Build Core | ✅ **Concluída** | `Dockerfile.ray`, `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `.env.example`, entrypoint script `render_config.py` | Fase 1 |
-| **3** | Deploy AWS | ✅ **Concluída** | `cluster.yaml` (Ray Cluster Launcher), `scripts/deploy_cluster.sh`, guia EC2 + Compose expandido, testes de segurança para cluster | Fase 2 |
-| **4** | Monitoramento | ✅ **Concluída** | `prometheus.yml`, integração Grafana no `docker-compose.yml` com provisioning automático de datasource, alertas documentados, testes de segurança para portas de monitoramento | Fase 2 |
-| **5** | Documentação Final | ⏳ Pendente | `README.md` (revisão final), verificação de consistência código-arquitetura, handoff | Fases 1–4 |
+| Fase | Nome | Status | Entregáveis |
+|------|------|--------|-------------|
+| **1** | Fundação | ✅ **Concluída** | `AGENTS.md`, `.gitignore`, `pyproject.toml`, `tests/`, `docs/ARCHITECTURE.md`, `README.md` |
+| **2** | Build Core | ✅ **Concluída** | `Dockerfile.ray`, `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `.env.example`, `render_config.py` |
+| **3** | Deploy AWS | ✅ **Concluída** | `cluster.yaml`, `scripts/deploy_cluster.sh`, guia EC2, testes de segurança |
+| **4** | Monitoramento | ✅ **Concluída** | `prometheus.yml`, Grafana + DCGM exporter, dashboards provisionados |
+| **5** | Documentação + Automação | ✅ **Concluída** | `./idia` CLI, dual render (LiteLLM config), Tier 4 scripts, ADR.md, LICENSE, 109 testes |
 
 Ao final de cada fase, a suíte de testes é executada para garantir que
 nenhuma regressão foi introduzida.
@@ -303,14 +342,14 @@ nenhuma regressão foi introduzida.
 
 ### 7.1 Categorias
 
-A suíte de testes usa **pytest 8.x** com quatro marcadores:
+A suíte de testes usa **pytest 8.x** com quatro marcadores (**109 testes, 0 falhas**):
 
-| Marcador | Categoria | O que valida | Requer infraestrutura? | Criada em |
-|----------|-----------|-------------|----------------------|-----------|
-| `docs` | Documentação | Estrutura de arquivos obrigatórios, seções de documentos vivos, footer de versão | Não | Fase 1 |
-| `config` | Schema de configuração | Estrutura YAML de `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example` | Não (apenas PyYAML) | Fase 1 |
-| `integration` | Integração | Build da imagem Docker, `docker compose up`, GPU detection, E2E inference | Sim (Docker + GPU NVIDIA) | Fase 2 |
-| `security` | Segurança | Isolamento de portas (`:8000`, `:8265` inacessíveis), pin de imagens | Sim (Docker) | Fase 2 |
+| Marcador | Categoria | O que valida | Requer infra? |
+|----------|-----------|-------------|--------------|
+| `docs` | Documentação | Estrutura de arquivos, seções de docs vivos, ADR, LICENSE | Não |
+| `config` | Schema YAML | Todos os configs: `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, Grafana | Não |
+| `integration` | Integração + Render | `render_config.py` (serve + litellm), VRAM budget, multi-model, contratos LiteLLM | Não (pure Python) |
+| `security` | Segurança | Isolamento de portas, pinning de imagens, fronteiras de confiança, DCGM | Não |
 
 ### 7.2 Como executar
 
@@ -363,27 +402,39 @@ Em `tests/test_config_schemas.py`:
 
 ## 8. Configuração
 
-### 8.1 Variáveis de ambiente obrigatórias
+### 8.1 Variáveis obrigatórias
 
-| Variável | Exemplo | Obrigatória | Onde usar |
-|----------|---------|-------------|-----------|
-| `HF_TOKEN` | `hf_xxx...` | Sim | Download de pesos do HuggingFace |
-| `LITELLM_MASTER_KEY` | `sk-litellm-admin-change-me` | Sim | Admin credential do LiteLLM |
-| `MODEL_ID` | `llama-3.1-8b` | Sim | Alias que clientes usam no campo `model` |
-| `MODEL_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` | Sim | Identificador no HuggingFace Hub |
+| Variável | Exemplo | Descrição |
+|----------|---------|-----------|
+| `HF_TOKEN` | `hf_xxx...` | Token HuggingFace para download de modelos |
+| `LITELLM_MASTER_KEY` | `sk-admin-minha-chave` | Admin credential do LiteLLM |
+| `MODEL_ID` | `llama-3.1-8b` | Alias que clientes usam no campo `model` |
+| `MODEL_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` | Repositório no HuggingFace Hub |
+| `GRAFANA_ADMIN_PASSWORD` | `sua-senha-grafana` | Senha do painel Grafana |
 
-### 8.2 Variáveis opcionais (com defaults documentados)
+### 8.2 Variáveis opcionais (com defaults)
 
 | Variável | Default | Descrição |
 |----------|---------|-----------|
-| `MAX_MODEL_LEN` | `8192` | Tamanho máximo de contexto; ajusta o dimensionamento do KV cache |
-| `GPU_MEMORY_UTILIZATION` | `0.9` | Fração da memória GPU reservada para pesos + KV cache |
+| `MAX_MODEL_LEN` | `8192` | Contexto máximo em tokens |
+| `GPU_MEMORY_UTILIZATION` | `0.9` | Fração da VRAM para pesos + KV cache (0–1] |
+| `GPU_COUNT` | `1` | Número de GPUs no host — usado para validação VRAM |
+| `GPU_VRAM_GB` | `24.0` | VRAM por GPU em GB (A10G=24, A100=80) |
+| `RAY_SHM_SIZE` | `4gb` | Shared memory para o container Ray |
+| `RAY_MEMORY_LIMIT` | `16g` | Limite de RAM para o container Ray |
 
-### 8.3 Convenções
+### 8.3 Variáveis para multi-model
 
-- Secrets em `.env` (nunca versionado).
-- `.env.example` é o template documentado (versionado).
-- Todas as variáveis seguem `UPPER_SNAKE_CASE`.
+Quando `MODELS_COUNT > 0`, as variáveis `MODEL_ID`/`MODEL_SOURCE` são ignoradas
+e substituídas por entradas numeradas:
+
+| Variável | Exemplo |
+|----------|---------|
+| `MODELS_COUNT` | `2` |
+| `MODEL_1_ID` | `llama-3.1-8b` |
+| `MODEL_1_SOURCE` | `meta-llama/Llama-3.1-8B-Instruct` |
+| `MODEL_2_ID` | `qwen-2.5-14b` |
+| `MODEL_2_SOURCE` | `Qwen/Qwen2.5-14B-Instruct` |
 
 ---
 
@@ -456,43 +507,97 @@ a propriedade que torna o deploy local e cloud idênticos do lado do consumidor.
 
 ## 11. Monitoramento
 
-O monitoramento foi implementado na **Fase 4** com Prometheus + Grafana,
-integrados ao `docker-compose.yml`:
+O monitoramento foi implementado na **Fase 4** com Prometheus + Grafana + DCGM Exporter:
 
-| Camada | Métricas exportadas | Endpoint Prometheus |
-|--------|-------------------|-------------------|
-| **vLLM** (cada réplica) | `time_to_first_token_seconds`, `e2e_request_latency_seconds`, `gpu_cache_usage_perc`, `num_preemptions_total`, `num_requests_waiting` | `ray-head:8080` (via Ray Serve) |
-| **Ray Serve** | Contagem de réplicas por deployment, profundidade de fila, eventos de autoscaling | `ray-head:8080` |
-| **Ray Cluster** | Contagem de nós, utilização GPU por nó, decisões do autoscaler | Dashboard (porta 8265, interna) |
-| **LiteLLM** | Custo por chave/equipe, contagem de requisições, latência, eventos de fallback | `litellm:4000` |
+| Camada | Métricas | Scrape endpoint |
+|--------|----------|----------------|
+| **vLLM** | TTFT, e2e latência, cache usage, preemptions | `ray-head:8080` |
+| **Ray Serve** | Réplicas, fila, autoscaling | `ray-head:8080` |
+| **LiteLLM** | Custo/chave, requisições, latência | `litellm:4000` |
+| **GPU (DCGM)** | Utilização, VRAM usada/livre, temperatura, power draw | `dcgm-exporter:9400` |
 
-**Infraestrutura:**
+**Acessar Grafana:** `http://localhost:3000` (admin / `$GRAFANA_ADMIN_PASSWORD`)
 
-| Componente | Imagem | Porta exposta |
-|-----------|--------|---------------|
-| Prometheus | `prom/prometheus:v2.55.0` | Nenhuma (interna — acessado pelo Grafana) |
-| Grafana | `grafana/grafana:11.4.0` | `127.0.0.1:3000` (localhost apenas) |
-
-O datasource Prometheus é configurado automaticamente via provisioning
-(`grafana/datasources/`). Dashboards oficiais do Ray Serve e vLLM podem
-ser baixados e colocados em `grafana/dashboards/` para importação
-automática.
-
-**Iniciar o monitoramento:** já está incluso no `docker compose up -d`.
-Acessar Grafana: `open http://localhost:3000` (credenciais: admin/admin).
-
-### Alertas recomendados (configurar via Grafana UI)
-
-| Alerta | Condição | Por quê |
-|--------|----------|---------|
-| Saturação KV cache | `gpu_cache_usage_perc > 0.95` por 5 min | Preempção/recompute iminente |
-| Teto de réplicas | Deployment em `max_replicas` por >10 min | O teto do autoscaling, não a GPU, é o gargalo |
-| Cluster no `max_workers` | Nós fixados no teto | Na AWS, limitado pelo `cluster.yaml` |
-| Dashboard acessível | Qualquer hit externo em 8265/10001 | Deveria ser impossível — tratar como incidente |
+O datasource Prometheus e o dashboard oficial do vLLM são provisionados
+automaticamente. DCGM exporter ativa apenas em hosts Linux com drivers NVIDIA
+(`docker compose --profile gpu up` — chamado automaticamente pelo `./idia`).
 
 ---
 
-## 12. Mantenedor
+## 12. Gerenciamento de Usuários
+
+O IDIA Server usa chaves virtuais do LiteLLM por usuário, com três tiers de acesso:
+
+| Tier | RPM | TPM | Perfil típico |
+|------|-----|-----|--------------|
+| `hard` | 15 | 50.000 | Pesquisadores, uso intenso |
+| `regular` | 4 | 15.000 | Mestrandos, uso regular |
+| `light` | 1 | 5.000 | Graduação, uso casual |
+
+### Criar usuário
+
+```bash
+./idia user create alice hard       # Alice recebe uma chave com tier hard
+./idia user create bob regular      # Bob com tier regular
+./idia user create carol light      # Carol com tier light
+```
+
+### Listar chaves ativas
+
+```bash
+./idia user list
+```
+
+### Revogar acesso
+
+```bash
+# Via API LiteLLM diretamente:
+curl -X POST http://localhost:4000/key/delete \
+  -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"keys": ["sk-alice-key-aqui"]}'
+```
+
+---
+
+## 13. Multi-Model
+
+O IDIA Server suporta N modelos simultâneos. O Ray Serve carrega cada modelo
+sob demanda (scale-to-zero), e o LiteLLM roteia por nome.
+
+### Configurar no .env
+
+```bash
+# Trocar de single-model para multi-model:
+MODELS_COUNT=2
+MODEL_1_ID=llama-3.1-8b
+MODEL_1_SOURCE=meta-llama/Llama-3.1-8B-Instruct
+MODEL_2_ID=qwen-2.5-14b
+MODEL_2_SOURCE=Qwen/Qwen2.5-14B-Instruct
+
+# Opcional — GPU_COUNT deve cobrir todos os modelos simultâneos:
+GPU_COUNT=2       # um modelo por GPU
+GPU_VRAM_GB=24.0  # VRAM por GPU
+```
+
+### Redesployar
+
+```bash
+./idia stop && ./idia deploy local
+```
+
+### Limitações multi-model
+
+- Cada modelo ocupa uma GPU inteira (sem GPU sharing por default)
+- O `render_config.py` valida que `MODELS_COUNT × GPU_UTILIZATION ≤ GPU_COUNT`
+  e rejeita configurações que estouram a VRAM antes de subir qualquer container
+- Modelos em `min_replicas: 0` ficam dormentes e não ocupam VRAM até o primeiro request
+
+---
+
+---
+
+## 14. Mantenedor
 
 **Anaximandro Souza**
 
@@ -518,17 +623,7 @@ Acessar Grafana: `open http://localhost:3000` (credenciais: admin/admin).
 
 ---
 
-## 13. Licença
-
-A definir pelo PUC-Behring Institute for AI.
-
-*Este repositório é mantido no âmbito das atividades de pesquisa do instituto.
-O código e a documentação aqui contidos são propriedade intelectual do
-PUC-Behring Institute for AI, salvo indicação em contrário.*
-
----
-
-## 13. Licença
+## 15. Licença
 
 ```
 Copyright 2026 PUC-Behring Institute for AI
@@ -546,14 +641,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ```
 
-O IDIA Server é distribuído sob **Apache License 2.0** — uma licença permissiva
-com proteção de patentes, compatível com projetos de IA (TensorFlow, PyTorch,
-Kubernetes) e adequada para instituições de pesquisa brasileiras que precisam
-incentivar tanto o uso acadêmico quanto a adoção industrial.
+O IDIA Server é distribuído sob **Apache License 2.0** — permissiva, com
+proteção de patentes, compatível com TensorFlow/PyTorch e adequada para
+instituições de pesquisa brasileiras.
 
 ---
 
-## 14. Referências
+## 16. Referências
 
 ### Documentação interna
 
@@ -589,5 +683,4 @@ incentivar tanto o uso acadêmico quanto a adoção industrial.
 
 ---
 
----
-*README version: 1.0 | Last updated: 2026-06-28 | Maintainer: @anaxsouza*
+*README version: 2.0 | Last updated: 2026-06-29 | Maintainer: @anaxsouza*
