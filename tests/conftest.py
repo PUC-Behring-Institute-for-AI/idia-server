@@ -11,6 +11,7 @@ is not installed or Docker is not available.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -115,11 +116,17 @@ def sts_client(_aws_client_kwargs) -> Any:
 
 @pytest.fixture(scope="session")
 def aws_script_env(floci) -> dict[str, str]:
-    """Environment variables for running shell scripts against Floci."""
+    """Environment variables for running shell scripts against Floci.
+
+    Includes PATH explicitly (captured during fixture setup, when PATH is
+    still intact) as a backup in case os.environ is modified by a test
+    plugin or Docker interaction before test execution.
+    """
     return {
         "AWS_ENDPOINT_URL": floci.get_endpoint(),
         "AWS_DEFAULT_REGION": floci.get_region(),
         "AWS_ACCESS_KEY_ID": floci.get_access_key(),
         "AWS_SECRET_ACCESS_KEY": floci.get_secret_key(),
         "AWS_PAGER": "",
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
     }

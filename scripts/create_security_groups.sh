@@ -87,12 +87,12 @@ authorize_ingress() {
     local cidr="$3"
     local description="$4"
 
+    # AWS CLI v2 no longer supports --description with --cidr.
+    # Use --ip-permissions format (compatible with v1 and v2).
     if aws ec2 authorize-security-group-ingress \
         --group-id "$SG_ID" \
-        --protocol "$protocol" \
-        --port "$port" \
-        --cidr "$cidr" \
-        --description "$description" 2>/dev/null; then
+        --ip-permissions "IpProtocol=$protocol,FromPort=$port,ToPort=$port,IpRanges=[{CidrIp=$cidr,Description=$description}]" \
+        2>/dev/null; then
         info "  Ingress: $protocol/$port from $cidr ($description)"
     else
         warn "  Ingress $protocol/$port from $cidr already exists (skipped)"
@@ -102,11 +102,11 @@ authorize_ingress() {
 authorize_ingress 4000 tcp "$ALLOWED_IP_RANGE" "LiteLLM proxy — OpenAI-compatible API"
 authorize_ingress 22   tcp "$ALLOWED_SSH_RANGE" "SSH access to Ray head"
 
-# Intra-SG: all traffic between Ray nodes
-INTRA_SG_RULE="--group-id $SG_ID --source-group $SG_ID --protocol -1"
+# Intra-SG: all traffic between Ray nodes (v2-compatible format)
 if aws ec2 authorize-security-group-ingress \
-    $INTRA_SG_RULE \
-    --description "Intra-SG: Ray cluster communication" 2>/dev/null; then
+    --group-id "$SG_ID" \
+    --ip-permissions "IpProtocol=-1,UserIdGroupPairs=[{GroupId=$SG_ID,Description=Intra-SG: Ray cluster communication}]" \
+    2>/dev/null; then
     info "  Intra-SG: all traffic within $SG_NAME"
 else
     warn "  Intra-SG rule already exists (skipped)"
