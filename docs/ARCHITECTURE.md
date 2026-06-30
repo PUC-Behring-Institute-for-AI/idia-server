@@ -1080,7 +1080,12 @@ artifacts exist.
 | `tests/test_docs.py` | 1 | `docs` | Required file existence, markdown headers, governance sections, version footer |
 | `tests/test_config_schemas.py` | 1, 4 | `config` | YAML schema validation for `serve_config.yaml`, `docker-compose.yml`, `config.yaml`, `cluster.yaml`, `prometheus.yml`, `.env.example`; Phase 4: extended Prometheus target validation, Grafana datasource provisioning config |
 | `tests/test_integration.py` | 2 | `integration` | `render_config.py` env var substitution (required/optional), dry-run mode, error paths; Compose consistency (build source, image pinning, env var propagation) |
-| `tests/test_security.py` | 2, 3, 4 | `security` | Port isolation (only 4000 externally accessible), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 3: cluster.yaml security invariants (dashboard bound to 127.0.0.1, pinned image, CPU-only head node). Phase 4: Prometheus port (9090) not published, Grafana bound to 127.0.0.1 |
+| `tests/test_security.py` | 2, 3, 4 | `security` | Port isolation (only 4000 externally accessible), image pinning (no `:latest`), trust boundaries (master key declared), dashboard binding. Phase 3: cluster.yaml security invariants. Phase 4: Prometheus port (9090) not published, Grafana bound to 127.0.0.1 |
+| `tests/test_aws_floci.py` | Post-5b | `aws` | AWS service-level tests via Floci emulator: S3 CRUD (model cache workflow), EC2 Security Group lifecycle (create, authorize, revoke, delete), IAM role management |
+| `tests/test_aws_scripts.py` | Post-5b | `aws` | Run actual deployment scripts (`create_security_groups.sh`, `cache_models.sh --dry-run`, `deploy_cluster.sh` validation) against Floci |
+| `tests/test_deploy_dry_run.py` | 1 | `config` | Dry-run validation: `render_config.py --dry-run`, `.env.example` schema, `./idia` CLI wrapper |
+
+| `tests/test_contract.py` | 5 | (none) | LiteLLM API contract tests via mock HTTP server: model not found, missing auth, invalid messages, response format |
 
 ### 11.6 Simulated integration testing (Mac/non-GPU environments)
 
@@ -1373,7 +1378,8 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 
 | 2026-06-29 | Operational automation — unified CLI, dual config render, UX: (§4.3 LiteLLM config rendering — `rendered_litellm_config.yaml`); (§5.4 Compose: litellm now mounts rendered config; healthcheck start_period 60s→300s; DCGM GPU passthrough devices added); (§5.6 entrypoint: `--render-all` flag; `_render_litellm_config()` + `render_litellm_config()` public API; `_write_rendered_files()`); (§7.3 cluster.yaml: SecurityGroupIds, worker_setup_commands documented); Scripts: smoke_test.sh --wait loop; cache_models.sh syntax fix; deploy_cluster.sh multi-model output + SG_ID export; idia unified CLI; .gitignore: rendered_*.yaml excluded; Tests: TestComposeConsistency + TestRenderLiteLLMConfig (7 new); README v2.0 with sections 12 (users) + 13 (multi-model) | Operational automation review — P1 critical fix (LiteLLM env var substitution not performed natively), P3 (multi-model litellm config), A.3 unified CLI, B.x script fixes |
 | 2026-06-29 | Operations guide — `docs/DEPLOY.md` created (11 sections: prerequisites, local deploy, multi-model, AWS deploy full walkthrough, user management, monitoring, client integration, maintenance, env var reference, troubleshooting); README v2.1 references DEPLOY.md | New living document: docs/DEPLOY.md (operations guide for maintainers and newcomers) |
+| 2026-06-30 | Floci-based AWS test suite — 3 new test modules (test_aws_floci.py, test_aws_scripts.py, test_deploy_dry_run.py); 42 service-level tests (S3 CRUD, EC2 SG lifecycle, IAM role mgmt); 11 script-level tests (run deployment scripts against Floci emulator); 8 dry-run tests (render_config, deploy_cli validation); AGENTS.md Phase Post-5b; ARCHITECTURE.md  expanded  (test coverage table) | Floci integration for offline AWS testing (no real AWS account needed) |
 
 ---
 
-*Document version: 2.0 | Last updated: 2026-06-29 | Sections changed: Structural Change History (entry added), new doc: docs/DEPLOY.md*
+*Document version: 2.1 | Last updated: 2026-06-30 | Sections changed: 11.5 Test files and what they cover, Structural Change History*

@@ -63,8 +63,11 @@ idia-server/
 │   ├── test_docs.py       ← testes de estrutura de documentação
 │   ├── test_config_schemas.py  ← testes de schema de configs
 │   ├── test_integration.py ← render_config (serve + litellm), multi-model, VRAM (Phase 2 ✓)
-│   ├── test_security.py   ← portas, pinning, fronteiras de confiança (Phase 2 ✓)
-│   └── test_contract.py   ← contratos REST LiteLLM sem GPU (Tier 4 ✓)
+│   ├── test_security.py    ← portas, pinning, fronteiras de confiança (Phase 2 ✓)
+│   ├── test_contract.py    ← contratos REST LiteLLM sem GPU (Tier 4 ✓)
+│   ├── test_aws_floci.py   ← testes AWS via Floci (Post-5b ✓)
+│   ├── test_aws_scripts.py ← scripts AWS contra Floci (Post-5b ✓)
+│   └── test_deploy_dry_run.py ← validação dry-run deploy (Post-5b ✓)
 ├── docs/
 │   ├── ARCHITECTURE.md    ← documento vivo de arquitetura
 │   ├── DEPLOY.md          ← guia de operações completo (local + AWS) (Phase 5 ✓)
@@ -86,6 +89,7 @@ idia-server/
 | **4** | Monitoring | Phase 2 | ✅ |
 | **5** | Final Documentation (revision + handoff) | Phases 1–4 | ✅ |
 | **Post-5** | Operational automation (unified CLI, dual render, DEPLOY.md) | Phase 5 | ✅ |
+| **Post-5b** | Floci-based AWS test suite (42 service tests, 11 script tests, 8 dry-run) | Post-5 | ✅ |
 
 ---
 
@@ -365,7 +369,7 @@ A implementação do templating usa o entrypoint Python `scripts/render_config.p
 
 ## Testing Strategy
 
-O IDIA Server usa **pytest 8.x** como executor. A suíte cobre quatro categorias de teste,
+O IDIA Server usa **pytest 8.x** como executor. A suíte cobre cinco categorias de teste,
 cada uma com seu marcador e requisitos de infraestrutura.
 
 ### Categorias de Teste
@@ -377,6 +381,7 @@ cada uma com seu marcador e requisitos de infraestrutura.
 | `integration` | Integração | `render_config.py`: substituição de env vars, validação YAML, dry-run, caminhos de erro; consistência do Compose (build source, pinning, env vars) | Componente unitário: apenas pytest; full suite: Docker + GPU | 2 |
 | `security` | Segurança | Isolamento de portas (`:8000`, `:8265`, `:10001` inacessíveis externamente; apenas `:4000` externa; `:9090` não publicada; `:3000` bound a localhost), pin de imagens (`no :latest`), fronteiras de confiança (master_key declarado), binding do dashboard | Verificação de YAML: apenas pytest; verificação de rede: Docker | 2 |
 | (none) | Contrato LiteLLM | Simulação de API LiteLLM: rejeição de modelo inexistente, auth ausente, mensagens inválidas, formato de resposta | Não — puro Python com mock | 5 (Tier 4) |
+| `aws` | Deploy AWS | Testes de serviços AWS contra emulador Floci local (S3, EC2, IAM); execução de scripts de deploy contra Floci; validação de dry-run e esquema de env vars | Docker (para container Floci) | Post-5b |
 
 ### Como executar
 
@@ -476,8 +481,8 @@ Isso permite que a suíte rode limpa desde a Fase 1.
 ### Adicionando Novos Testes
 
 1. Criar arquivo `tests/test_<area>.py`.
-2. Usar o marcador apropriado: `@pytest.mark.docs`, `@pytest.mark.config`,
-   `@pytest.mark.integration`, `@pytest.mark.security`.
+ 2. Usar o marcador apropriado: `@pytest.mark.docs`, `@pytest.mark.config`,
+    `@pytest.mark.integration`, `@pytest.mark.security`, `@pytest.mark.aws`.
 3. Usar as fixtures compartilhadas de `conftest.py` (`repo_root`, `docs_dir`, `config_files`).
 4. Se o teste depende de um arquivo de fase futura, usar `pytest.skip()` se o arquivo não existir.
 5. Registrar o novo marcador em `pyproject.toml` se for nova categoria.
