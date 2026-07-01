@@ -8,4 +8,7 @@ providers:
     disableDeletion: false
     editable: false
     options:
-      path: /var/lib/grafana/dashboards
+      # Point to the provisioning mount path, not the Grafana data directory.
+      # docker-compose.yml mounts ./grafana/dashboards/ → /etc/grafana/provisioning/dashboards
+      # See docs/ARCHITECTURE.md §10.2 for details.
+      path: /etc/grafana/provisioning/dashboards

@@ -2,8 +2,8 @@
 # Location: /Users/anaxsouza/Documents/Github/idia-server/AGENTS.md
 # Inherits: ~/.config/opencode/AGENTS.md (global rules)
 # Requires: global >= 2.0
-# Version: 1.3
-# Last updated: 2026-06-29
+# Version: 1.4
+# Last updated: 2026-07-01
 
 ## Project
 
@@ -11,8 +11,8 @@
 **Description:** Self-hosted LLM inference server with automatic GPU elasticity
   and on-demand model loading, deployable identically on a local multi-GPU host
   and on AWS.
-**Stack:** Python 3.11+, Docker Compose v2, Ray Serve LLM (2.55.0),
-  vLLM (0.18.0), LiteLLM (1.85.0), Prometheus, Grafana
+**Stack:** Python 3.11+, Docker Compose v2, Ray Serve LLM (2.56.0),
+  vLLM (0.22.0, bundled by ray[serve,llm]==2.56.0), LiteLLM (1.85.0), Prometheus, Grafana
 **Stack standard:** ~/.config/opencode/standards/python.md
 **Testing:** pytest 8.x, PyYAML (config schema validation)
 **Repository:** https://github.com/PUC-Behring-Institute-for-AI/idia-server
@@ -339,8 +339,8 @@ Derivadas da arquitetura. **Não negociáveis.**
 
 ## Container Image Policy
 
-- **`Dockerfile.ray`**: `FROM rayproject/ray-ml:2.55.0-py311-gpu`, pinado.
-  `RUN pip install "ray[serve,llm]==2.55.0" vllm`
+- **`Dockerfile.ray`**: `FROM rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a9ce72635c5861e473c24ea4dd150`, pinado.
+  `RUN pip install "ray[serve,llm]==2.56.0"` — sem vllm separado (bundled como 0.22.0).
 - **LiteLLM**: `docker.litellm.ai/berriai/litellm:v1.85.0`, pinado.
 - **Prometheus**: `prom/prometheus`, pinado a semver tag específica.
 - **Grafana**: `grafana/grafana`, pinado a semver tag específica.

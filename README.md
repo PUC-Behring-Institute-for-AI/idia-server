@@ -458,7 +458,7 @@ e substituídas por entradas numeradas:
 
 | Imagem | Fonte | Tag | Política |
 |--------|-------|-----|----------|
-| Ray Serve LLM | `rayproject/ray-ml` | `2.55.0-py311-gpu` | **Pinada** — nunca `:latest` |
+| Ray Serve LLM | `rayproject/ray` | `2.56.0-py311-gpu` | **Pinada + SHA256** — nunca `:latest` |
 | LiteLLM | `docker.litellm.ai/berriai/litellm` | `v1.85.0` | **Pinada** — nunca `:latest` |
 | Prometheus | `prom/prometheus` | Semver tag específica | **Pinada** |
 | Grafana | `grafana/grafana` | Semver tag específica | **Pinada** |

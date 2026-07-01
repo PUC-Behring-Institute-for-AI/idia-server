@@ -550,8 +550,8 @@ aws service-quotas get-service-quota \
 **5.1.5 Ray CLI**
 
 ```bash
-pip install "ray[default]==2.55.0"
-ray --version  # 2.55.0
+pip install "ray[default]==2.56.0"
+ray --version  # 2.56.0
 ```
 
 ### 5.2 Criar Security Group (recomendado)

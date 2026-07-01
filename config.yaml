@@ -35,6 +35,11 @@ general_settings:
 # Aplicado via default_team_settings — virtual keys herdam o team.
 # Para override por chave: POST /key/generate com team_id explícito.
 litellm_settings:
+  # LiteLLM 1.84.0+ requires auth on /metrics by default (PR #24600).
+  # Setting this to false allows Prometheus to scrape metrics without a token.
+  # Revert to true if the /metrics endpoint is behind a reverse-proxy that
+  # handles auth (e.g., in AWS behind an ALB with auth).
+  require_auth_for_metrics_endpoint: false
   default_team_settings:
     - team_alias: hard
       rpm_limit: 15                  # ~200 req/dia com peak factor

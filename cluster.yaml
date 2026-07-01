@@ -35,7 +35,7 @@ provider:
   region: us-east-1
 
 docker:
-  image: "rayproject/ray-ml:2.55.0-py311-gpu"
+  image: "rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a9ce72635c5861e473c24ea4dd150"
   container_name: "ray_container"
   run_options:
     - "--env HF_TOKEN=${HF_TOKEN}"
@@ -81,7 +81,7 @@ file_mounts:
 
 # Commands run on the head node inside the Docker container.
 head_setup_commands:
-  - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
+  - pip install --quiet "ray[serve,llm]==2.56.0"
 
 # (Optional) Pre-sync model weights from S3 to reduce GPU worker cold start
 # from ~15 minutes (HuggingFace download) to ~2 minutes (S3 transfer).
@@ -94,7 +94,7 @@ head_setup_commands:
 #
 # head_setup_commands should also include the sync for the head node render step:
 #   - aws s3 sync s3://<your-bucket>/hf-cache/ /root/.cache/huggingface/ --quiet
-#   - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
+#   - pip install --quiet "ray[serve,llm]==2.56.0"
 
 # Commands to start Ray on the head node.
 # --dashboard-host=127.0.0.1 is MANDATORY for security (§9.2).

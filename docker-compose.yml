@@ -83,7 +83,10 @@ services:
     environment:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4000/health"]
+      # LiteLLM's /health/liveliness is a public endpoint (no auth required).
+      # /health (without suffix) requires authentication when master_key is set.
+      # See LiteLLM PR #27502, docs.architcture.md §4.3.
+      test: ["CMD", "curl", "-f", "http://localhost:4000/health/liveliness"]
       interval: 15s
       timeout: 5s
       retries: 5

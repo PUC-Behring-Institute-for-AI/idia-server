@@ -180,16 +180,27 @@ model_list:
     litellm_params:
       model: openai/llama-3.1-8b        # must match model_id in ModelLoadingConfig
       api_base: http://ray-head:8000/v1 # Ray Serve's ingress, internal network only
-      api_key: "placeholder"            # Ray's ingress has no per-request key by default — see §9.3
+      api_key: "no-auth-internal"       # Ray's ingress has no per-request key by default — see §9.3
 
 general_settings:
   master_key: ${LITELLM_MASTER_KEY}    # required — no fallback (SEC-01)
-  background_health_checks: true
-  health_check_interval: 30
-  enable_health_check_routing: true
+  max_parallel_requests: 20            # global concurrent request cap
+
+litellm_settings:
+  require_auth_for_metrics_endpoint: false  # Prometheus scrape without bearer token
+  default_team_settings:
+    - team_alias: hard
+      rpm_limit: 15
+      tpm_limit: 50000
+    - team_alias: regular
+      rpm_limit: 4
+      tpm_limit: 15000
+    - team_alias: light
+      rpm_limit: 1
+      tpm_limit: 5000
 ```
 
-`background_health_checks` lets LiteLLM proactively drop an unreachable backend from its routing pool before a real request hits it — relevant when a model is mid-cold-start or a node is being replaced. The `master_key` is validated by `deploy_cluster.sh` (rejects placeholders) and by `render_config.py` (required env var).
+The `master_key` is validated by `deploy_cluster.sh` (rejects placeholders) and by `render_config.py` (required env var). The `require_auth_for_metrics_endpoint` setting exists because LiteLLM 1.84.0+ changed the default to require authentication on the `/metrics` endpoint (PR #24600), breaking Prometheus scrape targets that do not send a bearer token. This flag restores public access — a safe default because LiteLLM's port 4000 is only reachable within the internal Compose network, not externally.
 
 For the full file, see `config.yaml` at the repository root. For client consumption patterns, see §8.
 
@@ -213,14 +224,16 @@ inference-server/
 ### 5.2 `Dockerfile.ray`
 
 ```dockerfile
-FROM rayproject/ray-ml:2.55.0-py311-gpu
-RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" "vllm==0.5.4"
+FROM rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a9ce72635c5861e473c24ea4dd150
+RUN pip install --no-cache-dir "ray[serve,llm]==2.56.0"
 WORKDIR /app
 COPY serve_config.yaml scripts/render_config.py ./
 CMD ["python3", "/app/render_config.py"]
 ```
 
-The `ray-ml` image ships Ray's ML dependencies; the explicit `ray[serve,llm]` install pulls Ray Serve LLM's additional requirements. Both Ray (`2.55.0`) and vLLM (`0.5.4`) are pinned to ensure deterministic builds. `2.55.0` installs vLLM `0.18.0` as its bundled engine; verify compatibility before bumping either independently.
+The base image `ray:2.56.0-py311-gpu` is CUDA 12.1 (the `-gpu` tag is an alias for `-cu121` — same amd64 digest). The SHA256 is pinned for deterministic builds (§9.1). `ray[serve,llm]==2.56.0` resolves `vllm==0.22.0` internally via its own `llm-requirements.txt` — no separate vLLM pin is needed or desired, since overriding the bundled version would risk breaking the tested combination. vLLM 0.22.0 constrains `transformers>=4.56,!=5.0-5.5.0`, which keeps the package in the 4.x series and avoids the `AttributeError: 'PreTrainedConfig' object has no attribute 'max_position_embeddings'` regression introduced by transformers 5.x in `standardize_rope_params` for Llama models with custom `rope_scaling`. Ray 2.56.0 also includes PR #62464 which fixes the root cause: `_infer_supports_vision` now uses `AutoConfig.from_pretrained()` instead of `PretrainedConfig.from_pretrained()`, correctly resolving the concrete `LlamaConfig` class.
+
+> **Migration note (2.55.0 → 2.56.0):** `rayproject/ray-ml` GPU tags were discontinued after 2.47.x. The correct base image is `rayproject/ray` (non-ml), which is identical in terms of Ray + CUDA dependencies for LLM workloads.
 
 The CMD delegates to a Python entrypoint (`render_config.py`, see §5.6) that reads `serve_config.yaml`, substitutes `${VAR}` placeholders from environment variables, writes the rendered YAML to a temp file, and then `exec`s `serve run` — replacing the Python process with Ray Serve without a fork. This substitution is necessary because `serve_config.yaml` is consumed by Ray Serve directly and cannot access shell env vars natively.
 
@@ -449,7 +462,7 @@ on `serve_config.yaml` before delegating to Ray Serve.
 | Approach | Mechanism | Dependencies | Error handling |
 |----------|-----------|-------------|----------------|
 | Shell `envsubst` | `gettext-base` + `envsubst` | Must `apt-get install` in image | Silent — unknown placeholders passed through as literals |
-| **Python (chosen)** | `yaml.safe_load` + `re.sub` + `os.execlp` | Python + PyYAML (both already in `ray-ml`) | Explicit: missing required vars → exit 1; invalid YAML → exit 1 |
+| **Python (chosen)** | `yaml.safe_load` + `re.sub` + `os.execlp` | Python + PyYAML (both already in the `ray` base image) | Explicit: missing required vars → exit 1; invalid YAML → exit 1 |
 
 **Behavior:**
 
@@ -643,7 +656,7 @@ provider:
   region: us-east-1
 
 docker:
-  image: "rayproject/ray-ml:2.55.0-py311-gpu"     # pinned — no :latest
+  image: "rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a9ce72635c5861e473c24ea4dd150"     # pinned — no :latest; -gpu == -cu121 (CUDA 12.1)
   container_name: "ray_container"
   run_options:
     - "--env HF_TOKEN=${HF_TOKEN}"                 # required for gated models
@@ -674,7 +687,7 @@ file_mounts:
   "/app/rendered_config.yaml": "./rendered_config.yaml"
 
 head_setup_commands:
-  - pip install --quiet "ray[serve,llm]==2.55.0" "vllm==0.5.4"
+  - pip install --quiet "ray[serve,llm]==2.56.0"
 
 head_start_ray_commands:
   - ray stop
@@ -699,9 +712,7 @@ Changes from audit remediation (2026-06-28):
   Ray containers (workers included), enabling gated model downloads on GPU
   workers (STRUCT-07). Without this, models like LLaMA-3.1-8B-Instruct fail
   to download on AWS with `401 Unauthorized`.
-- **`vllm==0.5.4` pinned:** ensures the vLLM version on the head node matches
-  the local Dockerfile.ray, preventing behavioral divergence between local
-  and AWS inference (STRUCT-05).
+- **`ray[serve,llm]==2.56.0` (no separate vllm pin):** ray 2.56.0 pins `vllm==0.22.0` internally via its own `llm-requirements.txt`. Adding a separate `vllm` pin was incorrect and caused breakage — the bundled version is the tested combination. vLLM 0.22.0 constrains `transformers>=4.56,!=5.0-5.5.0`, keeping it in the 4.x series and avoiding the `AttributeError` in transformers 5.x RoPE standardization. Ray 2.56.0 also fixes `_infer_supports_vision` to use `AutoConfig.from_pretrained()` (PR #62464).
 
 **Deployment workflow:**
 
@@ -876,7 +887,7 @@ A request landing on a scaled-to-zero model pays the cold-start latency (§13.2)
 
 ### 9.1 Baseline controls
 
-- **Pin every image tag** (`ray-ml`, `litellm`, and any standalone `vllm`) — never `:latest`. LiteLLM had a supply-chain incident (compromised PyPI releases during a window in March 2026); pinning to an immutable version tag is the mitigation.
+- **Pin every image tag** (`ray`, `litellm`, and any standalone `vllm`) using both a semantic version tag and a SHA256 digest — never `:latest`. LiteLLM had a supply-chain incident (compromised PyPI releases during a window in March 2026); pinning to an immutable version tag is the mitigation. The SHA256 also guards against tag mutation (a tag can be reassigned without changing the version string).
 - **Two trust boundaries**: LiteLLM's master key (admin) vs. virtual keys (clients). Neither the master key nor any internal backend credential is ever derivable from a client-facing virtual key.
 - **TLS terminates at the edge** (ALB/NLB on AWS, a reverse proxy locally), not inside any container.
 - **Only port 4000 is ever reachable externally.** Ray ingress (8000), dashboard (8265), and Client port (10001) stay internal in every deployment target.
@@ -999,8 +1010,8 @@ Key properties:
 
 **Version alignment:** Dashboard JSONs must match the deployed Grafana version
 (`grafana/grafana:11.4.0`). If upgrading Grafana, re-download the official
-dashboards matching the new version. The vLLM dashboard tracks the pinned
-`vllm==0.5.4` metrics schema.
+dashboards matching the new version. The vLLM dashboard targets the
+`vllm==0.22.0` metrics schema (bundled by `ray[serve,llm]==2.56.0`).
 
 **Accessing Grafana:**
 
@@ -1379,7 +1390,9 @@ envolve trade-offs significativos entre múltiplas alternativas viáveis.
 | 2026-06-29 | Operational automation — unified CLI, dual config render, UX: (§4.3 LiteLLM config rendering — `rendered_litellm_config.yaml`); (§5.4 Compose: litellm now mounts rendered config; healthcheck start_period 60s→300s; DCGM GPU passthrough devices added); (§5.6 entrypoint: `--render-all` flag; `_render_litellm_config()` + `render_litellm_config()` public API; `_write_rendered_files()`); (§7.3 cluster.yaml: SecurityGroupIds, worker_setup_commands documented); Scripts: smoke_test.sh --wait loop; cache_models.sh syntax fix; deploy_cluster.sh multi-model output + SG_ID export; idia unified CLI; .gitignore: rendered_*.yaml excluded; Tests: TestComposeConsistency + TestRenderLiteLLMConfig (7 new); README v2.0 with sections 12 (users) + 13 (multi-model) | Operational automation review — P1 critical fix (LiteLLM env var substitution not performed natively), P3 (multi-model litellm config), A.3 unified CLI, B.x script fixes |
 | 2026-06-29 | Operations guide — `docs/DEPLOY.md` created (11 sections: prerequisites, local deploy, multi-model, AWS deploy full walkthrough, user management, monitoring, client integration, maintenance, env var reference, troubleshooting); README v2.1 references DEPLOY.md | New living document: docs/DEPLOY.md (operations guide for maintainers and newcomers) |
 | 2026-06-30 | Floci-based AWS test suite — 3 new test modules (test_aws_floci.py, test_aws_scripts.py, test_deploy_dry_run.py); 42 service-level tests (S3 CRUD, EC2 SG lifecycle, IAM role mgmt); 11 script-level tests (run deployment scripts against Floci emulator); 8 dry-run tests (render_config, deploy_cli validation); AGENTS.md Phase Post-5b; ARCHITECTURE.md  expanded  (test coverage table) | Floci integration for offline AWS testing (no real AWS account needed) |
+| 2026-07-01 | Ray 2.55.0 → 2.56.0 migration — root cause: `ray[serve,llm]==2.55.0` had `vllm[audio]>=0.18.0` without upper bound; pip resolved `vllm==0.24.0` which requires `transformers>=5.5.3`; `transformers 5.x` broke `standardize_rope_params` for `LlamaConfig` (`AttributeError: max_position_embeddings`); ray 2.56.0 fixes via PR #62464 (`AutoConfig.from_pretrained`) and pins `vllm==0.22.0` (§5.2 Dockerfile.ray: `ray:2.56.0-py311-gpu@sha256:9e0af…`, no separate vllm pin; §7.3 cluster.yaml: `ray:2.56.0-py311-gpu` replaces deprecated `ray-ml`; §9.1 image policy updated; vllm metrics schema reference updated to 0.22.0) | Bug: `AttributeError: 'PreTrainedConfig' object has no attribute 'max_position_embeddings'` in `_infer_supports_vision` on any Llama model with custom `rope_scaling` |
+| 2026-07-01 | Operational fixes — (§4.3 LiteLLM config synced: removed stale `background_health_checks`/`health_check_interval`/`enable_health_check_routing`, added `max_parallel_requests` and `require_auth_for_metrics_endpoint: false`; LiteLLM healthcheck in compose uses `/health/liveliness` to bypass auth; Grafana dashboard provider path corrected to `/etc/grafana/provisioning/dashboards`) | Prometheus scrape returned 401 (LiteLLM 1.84+ auth-default change), Docker healthcheck of LiteLLM returned 401 (`/health` requires auth when master_key is set), Grafana dashboards not provisioned (wrong path in dashboard.yml) |
 
 ---
 
-*Document version: 2.1 | Last updated: 2026-06-30 | Sections changed: 11.5 Test files and what they cover, Structural Change History*
+*Document version: 2.3 | Last updated: 2026-07-01 | Sections changed: 4.3, Structural Change History*

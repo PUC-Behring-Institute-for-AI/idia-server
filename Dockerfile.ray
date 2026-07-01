@@ -1,15 +1,21 @@
 # IDIA Server — Ray Serve LLM container
 #
-# Builds on the official Ray GPU image. vLLM is installed without a version
-# pin so pip resolves the version compatible with the Ray release. The CMD
-# delegates to the Python entrypoint which renders serve_config.yaml with
-# env var substitution before launching Ray Serve.
+# Builds on the official Ray GPU image (CUDA 12.1, same digest as -cu121 tag).
+# ray[serve,llm]==2.56.0 pins vllm==0.22.0 internally via llm-requirements.txt,
+# which constrains transformers to >=4.56,!=5.0-5.5.0 (4.x series), avoiding
+# the AttributeError in transformers 5.x RoPE standardization (fixed in
+# ray PR #62464 — AutoConfig.from_pretrained instead of PretrainedConfig).
 #
 # See docs/ARCHITECTURE.md §5.2 for details.
 
-FROM rayproject/ray:2.55.0-py311-gpu
+# sha256 pins the amd64 manifest (ray:2.56.0-py311-gpu == ray:2.56.0-py311-cu121,
+# same digest — CUDA 12.1 compatible with NVIDIA driver >= 525).
+FROM rayproject/ray:2.56.0-py311-gpu@sha256:9e0af0a2820745fc567bfb3777f7fd38107a9ce72635c5861e473c24ea4dd150
 
-RUN pip install --no-cache-dir "ray[serve,llm]==2.55.0" "vllm"
+# No separate vllm pin — ray[serve,llm]==2.56.0 resolves vllm==0.22.0 via its
+# own llm-requirements.txt. Installing vllm separately would risk a version
+# conflict and override the tested combination.
+RUN pip install --no-cache-dir "ray[serve,llm]==2.56.0"
 
 WORKDIR /app
 

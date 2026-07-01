@@ -522,6 +522,9 @@ def _render_litellm_config(env: dict[str, str]) -> str:
             "max_parallel_requests": 20,
         },
         "litellm_settings": {
+            # LiteLLM 1.84.0+ requires auth on /metrics by default (PR #24600).
+            # Opt out so Prometheus can scrape without a bearer token.
+            "require_auth_for_metrics_endpoint": False,
             "default_team_settings": [
                 {"team_alias": "hard",    "rpm_limit": 15, "tpm_limit": 50_000},
                 {"team_alias": "regular", "rpm_limit": 4,  "tpm_limit": 15_000},
